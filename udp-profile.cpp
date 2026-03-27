@@ -1,6 +1,9 @@
 #ifndef UNICODE
 #define UNICODE
+#include <string>
 #endif
+
+#include "CLI/CLI.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <WinSock2.h>
@@ -13,13 +16,13 @@
 #include <cstdint>
 #include <format>
 #include <iostream>
-#include <string>
 #include <thread>
 
-std::atomic<bool> SHOULD_RUN = false;
+std::atomic<bool> SHOULD_RUN = true; // send loop run flag
 
 using namespace std::chrono_literals;
 
+// windows sockets wsa raii helper
 struct WSARAII {
   WSAData wsa;
   bool is_init;
@@ -44,6 +47,7 @@ struct WSARAII {
   }
 };
 
+// socket raii helper class
 struct SockRAII {
   SOCKET sock;
 
@@ -68,6 +72,7 @@ struct SockRAII {
   }
 };
 
+// handle ctrl+c signals
 BOOL WINAPI sig_handler(DWORD sig) {
   switch (sig) {
   case CTRL_C_EVENT:
@@ -78,17 +83,46 @@ BOOL WINAPI sig_handler(DWORD sig) {
   }
 }
 
-[[nodiscard]] double update_ema(double old_ema, double new_value) {
+// ema calculation
+[[nodiscard]] constexpr double update_ema(double old_ema, double new_value) {
   constexpr int SAMPLES = 20;
-  const double WEIGHT = 1.0 / static_cast<double>(SAMPLES - 1);
+  constexpr double WEIGHT = 1.0 / static_cast<double>(SAMPLES - 1);
 
   return old_ema * (1 - WEIGHT) + new_value * WEIGHT;
 }
 
+// main program
 int main(int argc, char **argv) {
-  const char *addr = "192.168.1.10"; // receiver addr
-  const uint16_t port = 16388;        // receiver port
+  // setup app options
 
+  CLI::App app{R"(UDP Profiling sender program
+
+  Sends UDP packets to a target address at a specified frequency.
+  Used for profiling network latency and packet loss.
+
+  Example:
+    udp_sender -a 192.168.1.10 -p 5000 -f 1000 -u 2.0
+  )"};
+
+  argv = app.ensure_utf8(argv);
+
+  std::string addr = "";
+  app.add_option("-a,--address", addr, "IP address to send to")->default_val("127.0.0.1");
+
+  uint16_t port = 0;
+  app.add_option("-p,--port", port, "Receiver port")
+      ->required(true)
+      ->check(CLI::Range(static_cast<uint16_t>(0), UINT16_MAX));
+
+  uint32_t freq = 0;
+  app.add_option("-f,--freq", freq, "Send frequency [Hz]")->default_val(500);
+
+  double print_update_time = 0.0;
+  app.add_option("-u,--update", print_update_time, "Time between update printouts [s]")->default_val(1.0);
+
+  CLI11_PARSE(app, argc, argv);
+
+  // start initializing
   // initialize winsock
   WSARAII wsa;
   if (!wsa.init()) {
@@ -108,10 +142,10 @@ int main(int argc, char **argv) {
   ZeroMemory(&receiver, sizeof(receiver));
   receiver.sin_family = AF_INET;
   receiver.sin_port = htons(port);
-  inet_pton(AF_INET, addr, &receiver.sin_addr);
+  inet_pton(AF_INET, addr.c_str(), &receiver.sin_addr);
 
   // setup done, start sending
-  std::cout << std::format("Setup done sending on {}:{}\n", addr, port);
+  std::cout << std::format("Setup done sending on {}:{} @ {} Hz\n", addr, port, freq);
   SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
   SHOULD_RUN.store(true);
 
@@ -121,15 +155,22 @@ int main(int argc, char **argv) {
   };
   Msg msg{.num = 0};
 
-  uint32_t sends = 0;
-  uint32_t errors = 0;
-  double ema = 0.0;
+  uint32_t sends = 0;  // number of successful sends
+  uint32_t errors = 0; // number of unseccussful sends
+  double ema = 0.0;    // Exponential moving average of send Hz
 
-  std::chrono::steady_clock::time_point next_cycle_start =
-      std::chrono::steady_clock::now();                 // next cycle start
-  std::chrono::steady_clock::time_point last_send_time; // last actual send time
-  constexpr auto cycle_time = 2ms;
+  auto next_cycle_start = std::chrono::steady_clock::now(); // next cycle start
+  std::chrono::steady_clock::time_point last_send_time;     // last actual send time
+  const auto cycle_time = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::duration<double>(1.0 / static_cast<double>(freq)));
+  std::chrono::steady_clock::time_point last_print_time; // last time for printout
+  const auto print_wait_time =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(print_update_time));
+  auto next_printout_time = std::chrono::steady_clock::now();
+
+  // send loop
   while (SHOULD_RUN.load(std::memory_order_acquire)) {
+    // calculate next send
     while (next_cycle_start < std::chrono::steady_clock::now()) {
       next_cycle_start += cycle_time;
     }
@@ -139,6 +180,7 @@ int main(int argc, char **argv) {
       std::this_thread::yield();
     }
 
+    // actual send
     if (sendto(sock.sock,                            // socket
                reinterpret_cast<const char *>(&msg), // buf
                sizeof(msg),                          // buf len
@@ -148,11 +190,9 @@ int main(int argc, char **argv) {
       errors++;
       continue;
     }
-    // will be nonsense on first send
-    const double dt_send =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                      last_send_time)
-            .count();
+
+    // save time since last send. will be nonsense on first send
+    const double dt_send = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_send_time).count();
     last_send_time = std::chrono::steady_clock::now();
 
     // calculate ema for sends
@@ -166,13 +206,16 @@ int main(int argc, char **argv) {
     sends++;
 
     // print status sometimes
-    if ((sends + errors) % 1000 == 0) {
-      std::cout << std::format("Sent: {} Errors: {} EMA [Hz]: {:.2f}\n", sends,
-                               errors, 1.0 / ema);
+    if (std::chrono::steady_clock::now() >= next_printout_time) {
+      std::cout << std::format("\rSent: {} Errors: {} EMA [Hz]: {:4.2f}", sends, errors, 1.0 / ema);
+      // calculate next printout time
+      while (next_printout_time < std::chrono::steady_clock::now()) {
+        next_printout_time += print_wait_time;
+      }
     }
   }
 
-  std::cout << "Ending program!\n";
+  std::cout << "\nEnding program!\n";
 
-  return 1;
+  return 0;
 }
