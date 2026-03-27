@@ -1,6 +1,7 @@
 #ifndef UNICODE
 #define UNICODE
 #include <string>
+#include <vector>
 #endif
 
 #include "CLI/CLI.hpp"
@@ -19,6 +20,8 @@
 #include <thread>
 
 std::atomic<bool> SHOULD_RUN = true; // send loop run flag
+constexpr int VERSION_MAJOR = 1;     // major version
+constexpr int VERSION_MINOR = 0;     // minor version
 
 using namespace std::chrono_literals;
 
@@ -94,17 +97,20 @@ BOOL WINAPI sig_handler(DWORD sig) {
 // main program
 int main(int argc, char **argv) {
   // setup app options
-
   CLI::App app{R"(UDP Profiling sender program
 
   Sends UDP packets to a target address at a specified frequency.
   Used for profiling network latency and packet loss.
 
-  Example:
-    udp_sender -a 192.168.1.10 -p 5000 -f 1000 -u 2.0
-  )"};
+  Sends a byte array with the 4 LSBs as a uint32_t counter 
+  that is strictly increasing with each message. The rest 
+  of the size is padded out with 0.
 
+  Example:
+    udp_sender -a 192.168.1.10 -p 5000 -f 1000 -u 2.0 -s 128
+  )"};
   argv = app.ensure_utf8(argv);
+  app.set_version_flag("-v,--version", std::format("{}.{}", VERSION_MAJOR, VERSION_MINOR), "Print version and exit");
 
   std::string addr = "";
   app.add_option("-a,--address", addr, "IP address to send to")->default_val("127.0.0.1");
@@ -117,6 +123,12 @@ int main(int argc, char **argv) {
   uint32_t freq = 0;
   app.add_option("-f,--freq", freq, "Send frequency [Hz]")->default_val(500);
 
+  uint32_t message_size = 0;
+  app.add_option("-s,--size", message_size, "Message size in bytes")
+      ->default_val(64)
+      ->check(CLI::Range(static_cast<uint32_t>(4), // needs to fit at least counter
+                         UINT32_MAX));
+
   double print_update_time = 0.0;
   app.add_option("-u,--update", print_update_time, "Time between update printouts [s]")->default_val(1.0);
 
@@ -124,6 +136,7 @@ int main(int argc, char **argv) {
 
   // start initializing
   // initialize winsock
+  std::cout << std::format("Starting udp-profiler v{}.{}\n", VERSION_MAJOR, VERSION_MINOR);
   WSARAII wsa;
   if (!wsa.init()) {
     std::cerr << "could not initialize wsa\n";
@@ -145,15 +158,14 @@ int main(int argc, char **argv) {
   inet_pton(AF_INET, addr.c_str(), &receiver.sin_addr);
 
   // setup done, start sending
-  std::cout << std::format("Setup done sending on {}:{} @ {} Hz\n", addr, port, freq);
+  std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz\n", message_size, addr, port, freq);
   SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
   SHOULD_RUN.store(true);
 
-  // send data
-  struct Msg {
-    uint32_t num;
-  };
-  Msg msg{.num = 0};
+  // send data definition
+  // allocate padded buffer
+  auto buf = std::vector<std::byte>(message_size);
+  memset(buf.data(), 0, buf.size()); // zero out all data
 
   uint32_t sends = 0;  // number of successful sends
   uint32_t errors = 0; // number of unseccussful sends
@@ -163,7 +175,6 @@ int main(int argc, char **argv) {
   std::chrono::steady_clock::time_point last_send_time;     // last actual send time
   const auto cycle_time = std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::duration<double>(1.0 / static_cast<double>(freq)));
-  std::chrono::steady_clock::time_point last_print_time; // last time for printout
   const auto print_wait_time =
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(print_update_time));
   auto next_printout_time = std::chrono::steady_clock::now();
@@ -181,12 +192,13 @@ int main(int argc, char **argv) {
     }
 
     // actual send
-    if (sendto(sock.sock,                            // socket
-               reinterpret_cast<const char *>(&msg), // buf
-               sizeof(msg),                          // buf len
-               0,                                    // flags
-               (struct sockaddr *)&receiver,         // receiver
-               sizeof(receiver)) == SOCKET_ERROR) {  // receiver struct size
+    memcpy(buf.data(), &sends, sizeof(sends));
+    if (sendto(sock.sock,                                  // socket
+               reinterpret_cast<const char *>(buf.data()), // buf
+               static_cast<int>(buf.size()),               // buf len
+               0,                                          // flags
+               (struct sockaddr *)&receiver,               // receiver
+               sizeof(receiver)) == SOCKET_ERROR) {        // receiver struct size
       errors++;
       continue;
     }
@@ -202,7 +214,6 @@ int main(int argc, char **argv) {
       ema = update_ema(ema, dt_send);
     }
 
-    msg.num++;
     sends++;
 
     // print status sometimes
