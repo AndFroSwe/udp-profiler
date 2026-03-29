@@ -1,10 +1,9 @@
 #ifndef UNICODE
 #define UNICODE
-#include <string>
-#include <vector>
 #endif
 
 #include "CLI/CLI.hpp"
+#include "common.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <WinSock2.h>
@@ -17,82 +16,27 @@
 #include <cstdint>
 #include <format>
 #include <iostream>
+#include <string>
 #include <thread>
-
-std::atomic<bool> SHOULD_RUN = true; // send loop run flag
-constexpr int VERSION_MAJOR = 1;     // major version
-constexpr int VERSION_MINOR = 0;     // minor version
+#include <vector>
 
 using namespace std::chrono_literals;
 
-// windows sockets wsa raii helper
-struct WSARAII {
-  WSAData wsa;
-  bool is_init;
-
-  WSARAII() : is_init(false) {}
-  ~WSARAII() {
-    if (is_init) {
-      WSACleanup();
-    }
-  }
-
-  bool init() {
-    // cant initialize twice
-    if (is_init) {
-      return false;
-    }
-
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-      return false;
-    }
-    return true;
-  }
-};
-
-// socket raii helper class
-struct Connection {
-  SOCKET sock;
-
-  Connection() : sock(INVALID_SOCKET) {}
-  ~Connection() {
-    if (sock != INVALID_SOCKET) {
-      closesocket(sock);
-    }
-  }
-
-  bool init() {
-    // cant init twice
-    if (sock != INVALID_SOCKET) {
-      return false;
-    }
-
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock == INVALID_SOCKET) {
-      return false;
-    }
-    return true;
-  }
-};
-
 // handle ctrl+c signals
+std::atomic<bool> g_should_run = true; // send loop run flag
 BOOL WINAPI sig_handler(DWORD sig) {
   switch (sig) {
   case CTRL_C_EVENT:
-    SHOULD_RUN.store(false, std::memory_order_release);
+    g_should_run.store(false, std::memory_order_release);
     return TRUE;
   default:
     return FALSE;
   }
 }
 
-// ema calculation
-[[nodiscard]] constexpr double update_ema(double old_ema, double new_value) {
-  constexpr int SAMPLES = 20;
-  constexpr double WEIGHT = 1.0 / static_cast<double>(SAMPLES - 1);
-
-  return old_ema * (1 - WEIGHT) + new_value * WEIGHT;
-}
+// parameters
+constexpr int VERSION_MAJOR = 1; // major version
+constexpr int VERSION_MINOR = 0; // minor version
 
 // main program
 int main(int argc, char **argv) {
@@ -112,7 +56,7 @@ int main(int argc, char **argv) {
   argv = app.ensure_utf8(argv);
   app.set_version_flag("-v,--version", std::format("{}.{}", VERSION_MAJOR, VERSION_MINOR), "Print version and exit");
 
-  std::string addr = "";
+  std::string addr;
   app.add_option("-a,--address", addr, "IP address to send to")->default_val("127.0.0.1");
 
   uint16_t port = 0;
@@ -121,11 +65,11 @@ int main(int argc, char **argv) {
       ->check(CLI::Range(static_cast<uint16_t>(0), UINT16_MAX));
 
   uint32_t freq = 0;
-  app.add_option("-f,--freq", freq, "Send frequency [Hz]")->default_val(500);
+  app.add_option("-f,--freq", freq, "Send frequency [Hz]")->default_val(500); // NOLINT(readability-magic*)
 
   uint32_t message_size = 0;
   app.add_option("-s,--size", message_size, "Message size in bytes")
-      ->default_val(64)
+      ->default_val(64)                            // NOLINT(readability-magic*)
       ->check(CLI::Range(static_cast<uint32_t>(4), // needs to fit at least counter
                          UINT32_MAX));
 
@@ -151,16 +95,15 @@ int main(int argc, char **argv) {
   }
 
   // initialize the address
-  struct sockaddr_in receiver;
-  ZeroMemory(&receiver, sizeof(receiver));
-  receiver.sin_family = AF_INET;
-  receiver.sin_port = htons(port);
-  inet_pton(AF_INET, addr.c_str(), &receiver.sin_addr);
+  if (!sock.set_remote(addr, port)) {
+    std::cerr << "could not set remote\n";
+    return 1;
+  }
 
   // setup done, start sending
   std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz\n", message_size, addr, port, freq);
   SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
-  SHOULD_RUN.store(true);
+  g_should_run.store(true);
 
   // send data definition
   // allocate padded buffer
@@ -180,7 +123,7 @@ int main(int argc, char **argv) {
   auto next_printout_time = std::chrono::steady_clock::now();
 
   // send loop
-  while (SHOULD_RUN.load(std::memory_order_acquire)) {
+  while (g_should_run.load(std::memory_order_acquire)) {
     // calculate next send
     while (next_cycle_start < std::chrono::steady_clock::now()) {
       next_cycle_start += cycle_time;
@@ -193,12 +136,12 @@ int main(int argc, char **argv) {
 
     // actual send
     memcpy(buf.data(), &sends, sizeof(sends));
-    if (sendto(sock.sock,                                  // socket
-               reinterpret_cast<const char *>(buf.data()), // buf
-               static_cast<int>(buf.size()),               // buf len
-               0,                                          // flags
-               (struct sockaddr *)&receiver,               // receiver
-               sizeof(receiver)) == SOCKET_ERROR) {        // receiver struct size
+    if (sendto(sock.sock,                                          // socket
+               reinterpret_cast<const char *>(buf.data()),         // buf
+               static_cast<int>(buf.size()),                       // buf len
+               0,                                                  // flags
+               reinterpret_cast<sockaddr *>(&sock.remote.value()), // receiver
+               sizeof(sock.remote.value())) == SOCKET_ERROR) {     // receiver struct size
       errors++;
       continue;
     }

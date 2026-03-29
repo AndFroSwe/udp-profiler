@@ -19,11 +19,11 @@
 using namespace std::chrono_literals;
 
 // handle ctrl+c signals
-std::atomic<bool> SHOULD_RUN = true; // send loop run flag
+std::atomic<bool> g_should_run = true; // send loop run flag
 BOOL WINAPI sig_handler(DWORD sig) {
   switch (sig) {
   case CTRL_C_EVENT:
-    SHOULD_RUN.store(false, std::memory_order_release);
+    g_should_run.store(false, std::memory_order_release);
     return TRUE;
   default:
     return FALSE;
@@ -50,7 +50,7 @@ Example:
   argv = app.ensure_utf8(argv);
   app.set_version_flag("-v,--version", std::format("{}.{}", VERSION_MAJOR, VERSION_MINOR), "Print version and exit");
 
-  std::string addr = "";
+  std::string addr;
   app.add_option("-a,--address", addr, "IP address to send to")->default_val("127.0.0.1");
 
   uint16_t port = 0;
@@ -59,16 +59,16 @@ Example:
       ->check(CLI::Range(static_cast<uint16_t>(0), UINT16_MAX));
 
   uint32_t freq = 0;
-  app.add_option("-f,--freq", freq, "Send frequency [Hz]")->default_val(500);
+  app.add_option("-f,--freq", freq, "Send frequency [Hz]")->default_val(500); // NOLINT(readability-magic*)
 
   uint32_t message_size = 0;
   app.add_option("-s,--size", message_size, "Message size in bytes")
-      ->default_val(64)
+      ->default_val(64)                                             // NOLINT(readability-magic*)
       ->check(CLI::Range(static_cast<uint32_t>(MIN_MESSAGE_SIZE),   // needs to fit at least payload
                          static_cast<uint32_t>(MAX_MESSAGE_SIZE))); // and not be bigger that max allowed size
 
   uint32_t cycles = 0;
-  app.add_option("-c,--count", cycles, "Cycles to run test for")->default_val(100);
+  app.add_option("-c,--count", cycles, "Cycles to run test for")->default_val(100); // NOLINT(readability-magic*)
 
   double print_update_time = 0.0;
   app.add_option("-u,--update", print_update_time, "Time between update printouts [s]")->default_val(1.0);
@@ -115,7 +115,7 @@ Example:
   std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz {} times\n\n", message_size, addr, port, freq,
                            cycles);
   SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
-  SHOULD_RUN.store(true);                   // activate write cycle
+  g_should_run.store(true);                 // activate write cycle
 
   // allocate data buffer
   auto buf = std::vector<std::byte>(message_size);
@@ -143,10 +143,10 @@ Example:
   measure.client_to_server.reserve(cycles); // reserver space for measurements
 
   // send loop
-  int64_t message_id = 0;                              // initialize
-  while (SHOULD_RUN.load(std::memory_order_acquire) && // ctrl+c handler
-         message_id < cycles &&                        // desired attempts
-         measure.errors + measure.sends < cycles)      // early escape
+  int64_t message_id = 0;                                // initialize
+  while (g_should_run.load(std::memory_order_acquire) && // ctrl+c handler
+         message_id < cycles &&                          // desired attempts
+         measure.errors + measure.sends < cycles)        // early escape
   {
     // calculate next send
     while (next_cycle_start < std::chrono::steady_clock::now()) {
@@ -203,24 +203,22 @@ Example:
     }
 
     // decode received message
-    Payload final_payload;
     if (bytes != message_size) {
       measure.errors++;
       continue;
     }
-    memcpy(&final_payload, buf.data(), sizeof(final_payload));
-    final_payload.server_receive_timestamp_ns = receive_time;
+    memcpy(&payload, buf.data(), sizeof(payload));
+    payload.server_receive_timestamp_ns = receive_time;
 
     // check that correct message was received
-    if (final_payload.message_id != message_id) {
+    if (payload.message_id != message_id) {
       measure.errors++;
       continue;
     }
 
     // update measurements
-    measure.rtt.emplace_back(final_payload.server_receive_timestamp_ns - final_payload.server_send_timestamp_ns);
-    measure.client_to_server.emplace_back(final_payload.server_receive_timestamp_ns -
-                                          final_payload.client_receive_timestamp_ns);
+    measure.rtt.emplace_back(payload.server_receive_timestamp_ns - payload.server_send_timestamp_ns);
+    measure.client_to_server.emplace_back(payload.server_receive_timestamp_ns - payload.client_receive_timestamp_ns);
     measure.sends++;
 
     // update measurement
@@ -238,7 +236,8 @@ Example:
     // print status sometimes
     if (std::chrono::steady_clock::now() >= next_printout_time) {
       std::cout << std::format("\rMeasured {}/{} [{:2.0f} %] Current freq: {:6.2f} Hz", message_id, cycles,
-                               static_cast<double>(message_id) / cycles * 100, ema_send_freq);
+                               static_cast<double>(message_id) / cycles * 100, // NOLINT(readability-magic*)
+                               ema_send_freq);
       // calculate next printout time
       while (next_printout_time < std::chrono::steady_clock::now()) {
         next_printout_time += print_wait_time;
@@ -261,7 +260,9 @@ Example:
   std::cout << "Done!\n";
 
   // helper
-  constexpr auto to_us = [](const int64_t ns) -> double { return static_cast<double>(ns) / 1000.0; };
+  constexpr auto TO_US = [](const int64_t ns) -> double { // NOLINT(readability-*)
+    return static_cast<double>(ns) / 1000.0;              // NOLINT(readability-magic*)
+  };
 
   // print measurements
   std::cout << "Measurement results:\n";
@@ -270,12 +271,12 @@ Example:
   std::cout << std::format("Errors: {}\n", measure.errors);
 
   std::cout << "\t\t   RTT\t   CtS\n";
-  std::cout << std::format("Mean [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.mean), to_us(rtt_cts.mean));
-  std::cout << std::format("Median [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.median), to_us(rtt_cts.median));
-  std::cout << std::format("Stddev [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.stddev), to_us(rtt_cts.stddev));
-  std::cout << std::format("Max [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.max_val), to_us(rtt_cts.max_val));
-  std::cout << std::format("Min [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.min_val), to_us(rtt_cts.min_val));
-  std::cout << std::format("P95 [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.p95), to_us(rtt_cts.p95));
+  std::cout << std::format("Mean [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.mean), TO_US(rtt_cts.mean));
+  std::cout << std::format("Median [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.median), TO_US(rtt_cts.median));
+  std::cout << std::format("Stddev [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.stddev), TO_US(rtt_cts.stddev));
+  std::cout << std::format("Max [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.max_val), TO_US(rtt_cts.max_val));
+  std::cout << std::format("Min [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.min_val), TO_US(rtt_cts.min_val));
+  std::cout << std::format("P95 [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.p95), TO_US(rtt_cts.p95));
 
   std::cout << "\nEnding program!\n";
 

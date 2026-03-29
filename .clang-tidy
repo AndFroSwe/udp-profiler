@@ -3,7 +3,7 @@ Checks: >-
   clang-diagnostic-*,
   performance-*,
   readability-*,
-  modernize-*,
+  -readability-identifier-length
 
 WarningsAsErrors: ''
 HeaderFileExtensions:

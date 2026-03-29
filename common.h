@@ -62,10 +62,7 @@ public:
     }
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock == INVALID_SOCKET) {
-      return false;
-    }
-    return true;
+    return sock != INVALID_SOCKET;
   }
 
   bool bind_local(const std::string_view ip, const uint16_t port) {
@@ -89,7 +86,7 @@ public:
   }
 
 private:
-  bool set_target(std::optional<sockaddr_in> &target, const std::string_view ip, const uint16_t port) {
+  static bool set_target(std::optional<sockaddr_in> &target, const std::string_view ip, const uint16_t port) {
     sockaddr_in t;
     ZeroMemory(&t, sizeof(t));
     t.sin_family = AF_INET;
@@ -138,7 +135,7 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   constexpr int SAMPLES = 20; // to calculate EMA ratio
   constexpr double WEIGHT = 1.0 / static_cast<double>(SAMPLES - 1);
 
-  return old_ema * (1 - WEIGHT) + new_value * WEIGHT;
+  return (old_ema * (1 - WEIGHT)) + (new_value * WEIGHT);
 }
 
 [[nodiscard]] inline int64_t get_timestamp_ns() {
@@ -151,10 +148,11 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   double idx = p * (m.size() - 1);
   size_t lo = static_cast<size_t>(idx);
   size_t hi = lo + 1;
-  if (hi >= m.size())
+  if (hi >= m.size()) {
     return m.back();
+  }
   double frac = idx - lo;
-  return m[lo] + frac * (m[hi] - m[lo]); // linear interpolation
+  return m[lo] + (frac * (m[hi] - m[lo])); // linear interpolation
 }
 
 [[nodiscard]] inline KPIs calculate_kpis(std::vector<int64_t> &m) {
@@ -185,12 +183,12 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   // save the kpis
   KPIs kpi;
   kpi.mean = mean;
-  kpi.median = (n % 2 == 0) ? (m[n / 2 - 1] + m[n / 2]) / 2.0 // even: avg two middles
-                            : m[n / 2];                       // odd: middle element
+  kpi.median = (n % 2 == 0) ? (m[n / 2] + m[(n / 2) - 1]) / 2.0 // even: avg two middles NOLINT(readability-magic*)
+                            : m[n / 2];                         // odd: middle element
   kpi.stddev = std::sqrt(sq_sum / divisor);
   kpi.max_val = max_val;
   kpi.min_val = min_val;
-  kpi.p95 = percentile(m, 0.95);
+  kpi.p95 = percentile(m, 0.95); // NOLINT(readability-magic*)
 
   return kpi;
 }
