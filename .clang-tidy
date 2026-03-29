@@ -1,9 +1,9 @@
 ---
 Checks: >-
-  clang-diagnostic-*
-  performance-*
-  readability-*
-  modernize-*
+  clang-diagnostic-*,
+  performance-*,
+  readability-*,
+  modernize-*,
 
 WarningsAsErrors: ''
 HeaderFileExtensions:
