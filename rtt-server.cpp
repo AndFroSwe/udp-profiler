@@ -16,12 +16,6 @@
 #include <thread>
 #include <vector>
 
-#ifdef NDEBUG
-#define DBG(s)
-#else
-#define DBG(s) std::cout << s << '\n';
-#endif
-
 using namespace std::chrono_literals;
 
 // handle ctrl+c signals
@@ -68,6 +62,9 @@ int main(int argc, char **argv) {
   uint32_t cycles = 0;
   app.add_option("-c,--count", cycles, "Cycles to run test for")->default_val(100);
 
+  double print_update_time = 0.0;
+  app.add_option("-u,--update", print_update_time, "Time between update printouts [s]")->default_val(1.0);
+
   CLI11_PARSE(app, argc, argv);
 
   // start initializing
@@ -107,7 +104,7 @@ int main(int argc, char **argv) {
   }
 
   // setup done, start sending
-  std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz {} times\n", message_size, addr, port, freq,
+  std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz {} times\n\n", message_size, addr, port, freq,
                            cycles);
   SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
   SHOULD_RUN.store(true);                   // activate write cycle
@@ -117,17 +114,25 @@ int main(int argc, char **argv) {
   memset(buf.data(), 0, buf.size()); // zero out all data
 
   // prepare
+  // cycle time
   const auto cycle_time = std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::duration<double>(1.0 / static_cast<double>(freq))); // calculate cycle time
   auto next_cycle_start = std::chrono::steady_clock::now();            // init next cycle start
+  double ema_send_freq = 0.0;                                          // keep track of send frequency
+  auto last_send = std::chrono::steady_clock::now();                   // last send, prepare value
+
+  // print time
+  const auto print_wait_time =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(print_update_time));
+  auto next_printout_time = std::chrono::steady_clock::now();
+
   // initialize measurement
   Measurement measure = {
       .sends = 0,
       .errors = 0,
-      .ema = 0,
-      .min_rtt = 0,
-      .max_rtt = 0,
   };
+  measure.rtt.reserve(cycles);              // reserve space for measurements
+  measure.client_to_server.reserve(cycles); // reserver space for measurements
 
   // send loop
   int64_t message_id = 0;                              // initialize
@@ -147,11 +152,10 @@ int main(int argc, char **argv) {
 
     // create the payload
     Payload payload{
-        .message_size = message_size,            // info about message size
-        .send_timestamp_ns = get_timestamp_ns(), // set current timestamp
-        .receive_timestamp_ns = 0,               // initialize
-        .send_timestamp2_ns = 0,
-        .receive_timestamp2_ns = 0,
+        .message_size = message_size,                   // info about message size
+        .server_send_timestamp_ns = get_timestamp_ns(), // set current timestamp
+        .client_receive_timestamp_ns = 0,               // initialize
+        .server_receive_timestamp_ns = 0,
         .message_id = message_id // add the message id
     };
     memcpy(buf.data(), &payload, sizeof(payload)); // copy to beginning of buffer
@@ -163,7 +167,6 @@ int main(int argc, char **argv) {
                0,                                                  // flags
                reinterpret_cast<sockaddr *>(&sock.remote.value()), // receiver
                sizeof(sock.remote.value())) == SOCKET_ERROR) {     // receiver struct size
-      DBG("Send error");
       measure.errors++;
       continue;
     }
@@ -174,6 +177,7 @@ int main(int argc, char **argv) {
                      static_cast<int>(buf.size()),         // buffer size
                      0);                                   // flags
     const auto receive_time = get_timestamp_ns();          // save receive timestamp on reception
+
     // handle errors
     if (bytes == SOCKET_ERROR) {
       if (WSAGetLastError() == WSAETIMEDOUT) {
@@ -184,7 +188,6 @@ int main(int argc, char **argv) {
           measure.errors++;
         }
       } else {
-        DBG("Receive error");
         // handle other errors
         measure.errors++;
       }
@@ -194,39 +197,74 @@ int main(int argc, char **argv) {
     // decode received message
     Payload final_payload;
     if (bytes != message_size) {
-      DBG("Message size error");
       measure.errors++;
       continue;
     }
     memcpy(&final_payload, buf.data(), sizeof(final_payload));
-    final_payload.receive_timestamp2_ns = receive_time;
+    final_payload.server_receive_timestamp_ns = receive_time;
 
     // check that correct message was received
     if (final_payload.message_id != message_id) {
-      DBG("ID error");
       measure.errors++;
       continue;
     }
 
     // update measurements
-    int64_t rtt = final_payload.receive_timestamp2_ns - final_payload.send_timestamp_ns;
+    measure.rtt.emplace_back(final_payload.server_receive_timestamp_ns - final_payload.server_send_timestamp_ns);
+    measure.client_to_server.emplace_back(final_payload.server_receive_timestamp_ns -
+                                          final_payload.client_receive_timestamp_ns);
     measure.sends++;
-    measure.ema = measure.sends == 1 ? rtt : update_ema(measure.ema, rtt); // init ema to value on first run
-    measure.min_rtt = measure.min_rtt == 0 ? rtt : std::min(measure.min_rtt, rtt);
-    measure.max_rtt = std::max(measure.max_rtt, rtt);
 
     // update measurement
     message_id++;
+
+    // keep track of ema. needs at least 2 values to calculate
+    const auto now = std::chrono::steady_clock::now();
+    if (measure.sends > 1) {
+      const auto send_freq = 1.0 / std::chrono::duration<double>(now - last_send).count();
+      ema_send_freq = measure.sends == 2 ? send_freq                             // seed ema
+                                         : update_ema(ema_send_freq, send_freq); // update recursively
+    }
+    last_send = now;
+
+    // print status sometimes
+    if (std::chrono::steady_clock::now() >= next_printout_time) {
+      std::cout << std::format("\r Measured {}/{} [{:3.0f} %] Current freq: {:6.2f} Hz", message_id, cycles,
+                               static_cast<double>(message_id) / cycles * 100, ema_send_freq);
+      // calculate next printout time
+      while (next_printout_time < std::chrono::steady_clock::now()) {
+        next_printout_time += print_wait_time;
+      }
+    }
+  } // end of work loop
+  std::cout << '\n'; // get newline for final prints
+
+  if (measure.sends == 0) {
+    std::cout << "Got no values, exiting...";
+    return 0;
   }
+
+  std::cout << "Measurements done, calculating KPIs...\n";
+  std::cout << "RTT...\n";
+  const auto rtt_kpi = calculate_kpis(measure.rtt);
+
+  std::cout << "Client to Server times...\n";
+  const auto rtt_cts = calculate_kpis(measure.client_to_server);
+  std::cout << "Done!\n";
 
   // print measurements
   std::cout << "Measurement results:\n";
   std::cout << "------------------------\n";
   std::cout << std::format("Sends: {}\n", measure.sends);
   std::cout << std::format("Errors: {}\n", measure.errors);
-  std::cout << std::format("RTT EMA: {} us\n", static_cast<double>(measure.ema) / 1000.0);
-  std::cout << std::format("Max RTT: {} us\n", static_cast<double>(measure.max_rtt) / 1000.0);
-  std::cout << std::format("Min RTT: {} us\n", static_cast<double>(measure.min_rtt) / 1000.0);
+
+  std::cout << "RTT\n";
+  std::cout << std::format("Mean: {} us\n", static_cast<double>(rtt_kpi.mean) / 1000.0);
+  std::cout << std::format("Median: {} us\n", static_cast<double>(rtt_kpi.median) / 1000.0);
+  std::cout << std::format("StdDev: {} us\n", static_cast<double>(rtt_kpi.stddev) / 1000.0);
+  std::cout << std::format("Max: {} us\n", static_cast<double>(rtt_kpi.max_val) / 1000.0);
+  std::cout << std::format("Min: {} us\n", static_cast<double>(rtt_kpi.min_val) / 1000.0);
+  std::cout << std::format("p95: {} us\n", static_cast<double>(rtt_kpi.p95) / 1000.0);
 
   std::cout << "\nEnding program!\n";
 

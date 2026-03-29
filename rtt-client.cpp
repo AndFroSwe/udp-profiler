@@ -144,7 +144,7 @@ int main(int argc, char **argv) {
     // set new data to buffer
     // todo: receive size check should be at least payload
     Payload *p = reinterpret_cast<Payload *>(buf.data());
-    p->receive_timestamp_ns = receive_time;
+    p->client_receive_timestamp_ns = receive_time;
 
     // send reply
     if (sendto(sock.sock,                                          // socket
