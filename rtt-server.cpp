@@ -229,7 +229,7 @@ int main(int argc, char **argv) {
 
     // print status sometimes
     if (std::chrono::steady_clock::now() >= next_printout_time) {
-      std::cout << std::format("\r Measured {}/{} [{:3.0f} %] Current freq: {:6.2f} Hz", message_id, cycles,
+      std::cout << std::format("\rMeasured {}/{} [{:2.0f} %] Current freq: {:6.2f} Hz", message_id, cycles,
                                static_cast<double>(message_id) / cycles * 100, ema_send_freq);
       // calculate next printout time
       while (next_printout_time < std::chrono::steady_clock::now()) {
@@ -252,19 +252,22 @@ int main(int argc, char **argv) {
   const auto rtt_cts = calculate_kpis(measure.client_to_server);
   std::cout << "Done!\n";
 
+  // helper
+  constexpr auto to_us = [](const int64_t ns) -> double { return static_cast<double>(ns) / 1000.0; };
+
   // print measurements
   std::cout << "Measurement results:\n";
   std::cout << "------------------------\n";
   std::cout << std::format("Sends: {}\n", measure.sends);
   std::cout << std::format("Errors: {}\n", measure.errors);
 
-  std::cout << "RTT\n";
-  std::cout << std::format("Mean: {} us\n", static_cast<double>(rtt_kpi.mean) / 1000.0);
-  std::cout << std::format("Median: {} us\n", static_cast<double>(rtt_kpi.median) / 1000.0);
-  std::cout << std::format("StdDev: {} us\n", static_cast<double>(rtt_kpi.stddev) / 1000.0);
-  std::cout << std::format("Max: {} us\n", static_cast<double>(rtt_kpi.max_val) / 1000.0);
-  std::cout << std::format("Min: {} us\n", static_cast<double>(rtt_kpi.min_val) / 1000.0);
-  std::cout << std::format("p95: {} us\n", static_cast<double>(rtt_kpi.p95) / 1000.0);
+  std::cout << "\t\t   RTT\t   CtS\n";
+  std::cout << std::format("Mean [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.mean), to_us(rtt_cts.mean));
+  std::cout << std::format("Median [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.median), to_us(rtt_cts.median));
+  std::cout << std::format("Stddev [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.stddev), to_us(rtt_cts.stddev));
+  std::cout << std::format("Max [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.max_val), to_us(rtt_cts.max_val));
+  std::cout << std::format("Min [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.min_val), to_us(rtt_cts.min_val));
+  std::cout << std::format("P95 [us]\t{:6.1f}\t{:6.1f}\n", to_us(rtt_kpi.p95), to_us(rtt_cts.p95));
 
   std::cout << "\nEnding program!\n";
 
