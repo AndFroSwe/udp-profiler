@@ -95,7 +95,7 @@ int main(int argc, char **argv) {
   }
 
   // initialize the address
-  if (!sock.set_remote(addr, port)) {
+  if (!sock.create_remote(addr, port)) {
     std::cerr << "could not set remote\n";
     return 1;
   }

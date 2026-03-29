@@ -100,7 +100,7 @@ Example:
   }
 
   // setup the remote target
-  if (!sock.set_remote(addr, port)) {
+  if (!sock.create_remote(addr, port)) {
     std::cerr << "incorrect receiver address settings\n";
     return 1;
   }
@@ -169,22 +169,15 @@ Example:
     memcpy(buf.data(), &payload, sizeof(payload)); // copy to beginning of buffer
 
     // send payload
-    if (sendto(sock.sock,                                          // socket
-               reinterpret_cast<const char *>(buf.data()),         // buf
-               static_cast<int>(buf.size()),                       // buf len
-               0,                                                  // flags
-               reinterpret_cast<sockaddr *>(&sock.remote.value()), // receiver
-               sizeof(sock.remote.value())) == SOCKET_ERROR) {     // receiver struct size
+    if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), buf.size()) ==
+        SOCKET_ERROR) { // receiver struct size
       measure.errors++;
       continue;
     }
 
     // wait for return message
-    int bytes = recv(sock.sock,                            // socket
-                     reinterpret_cast<char *>(buf.data()), // recv buf. reuse send buf
-                     static_cast<int>(buf.size()),         // buffer size
-                     0);                                   // flags
-    const auto receive_time = get_timestamp_ns();          // save receive timestamp on reception
+    int bytes = sock.receive_on_local(reinterpret_cast<char *>(buf.data()), buf.size());
+    const auto receive_time = get_timestamp_ns(); // save receive timestamp on reception
 
     // handle errors
     if (bytes == SOCKET_ERROR) {

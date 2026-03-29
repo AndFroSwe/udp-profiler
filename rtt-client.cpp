@@ -155,12 +155,8 @@ Example:
     payload->client_receive_timestamp_ns = receive_time;
 
     // send reply
-    if (sendto(sock.sock,                                          // socket
-               reinterpret_cast<const char *>(buf.data()),         // buf
-               static_cast<int>(payload->message_size),            // message size
-               0,                                                  // flags
-               reinterpret_cast<sockaddr *>(&sock.remote.value()), // receiver
-               sizeof(sock.remote.value())) == SOCKET_ERROR) {     // receiver struct size
+    if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), static_cast<int>(payload->message_size)) ==
+        SOCKET_ERROR) {
       continue;
     }
 

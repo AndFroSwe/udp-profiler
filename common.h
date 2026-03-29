@@ -81,8 +81,34 @@ public:
     return true;
   }
 
-  bool set_remote(const std::string_view ip, const uint16_t port) {
+  bool create_remote(const std::string_view ip, const uint16_t port) {
     return set_target(remote, ip, port);
+  }
+
+  int send_to_remote(const char *data, const size_t bufsize) {
+    // need a remote to send value
+    if (!remote) {
+      return SOCKET_ERROR;
+    }
+
+    return sendto(sock,                                          // socket
+                  data,                                          // buf
+                  static_cast<int>(bufsize),                     // buf len
+                  0,                                             // flags
+                  reinterpret_cast<sockaddr *>(&remote.value()), // receiver
+                  sizeof(remote.value()));                       // receiver struct size
+  }
+
+  int receive_on_local(char *data, const size_t bufsize) const {
+    // need local to send
+    if (!local) {
+      return 0;
+    }
+
+    return recv(sock,                      // socket
+                data,                      // recv buf. reuse send buf
+                static_cast<int>(bufsize), // buffer size
+                0);                        // flags
   }
 
 private:
