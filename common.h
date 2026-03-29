@@ -81,6 +81,38 @@ public:
     return true;
   }
 
+  // use recvfrom if has no remote, otherwise just receive
+  int receive_on_local_and_save_remote(char *data, size_t bufsize) {
+    // must have local to receive
+    if (!local) {
+      return SOCKET_ERROR;
+    }
+
+    int bytes = 0;
+    if (!remote.has_value()) {
+      int client_len = sizeof(remote.value());
+      sockaddr_in new_remote;
+      ZeroMemory(&new_remote, sizeof(new_remote));
+      bytes = recvfrom(sock,                                      // socket
+                       data,                                      // recv buf. reuse send buf
+                       static_cast<int>(bufsize),                 // buffer size
+                       0,                                         // flags
+                       reinterpret_cast<sockaddr *>(&new_remote), // client addr
+                       &client_len);                              // length of client addr
+      if (bytes != SOCKET_ERROR) {
+        remote = new_remote; // save the remote
+      }
+    } else {
+      // just receive, we know the remote
+      bytes = recv(sock,                      // socket
+                   data,                      // recv buf. reuse send buf
+                   static_cast<int>(bufsize), // buffer size
+                   0);                        // flags
+    }
+
+    return bytes;
+  }
+
   bool create_remote(const std::string_view ip, const uint16_t port) {
     return set_target(remote, ip, port);
   }

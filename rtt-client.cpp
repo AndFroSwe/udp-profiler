@@ -11,15 +11,8 @@
 #include <cstdint>
 #include <format>
 #include <iostream>
-#include <optional>
 #include <string>
 #include <vector>
-
-#ifdef NDEBUG
-#define DBG(s)
-#else
-#define DBG(s) std::cout << s << '\n';
-#endif
 
 using namespace std::chrono_literals;
 
@@ -109,28 +102,7 @@ Example:
   while (g_should_run.load(std::memory_order_acquire)) {
     // wait incoming message
 
-    int bytes = 0;
-    // on first receive, save the sender
-    if (!sock.remote.has_value()) {
-      int client_len = sizeof(sock.remote.value());
-      sockaddr_in remote;
-      ZeroMemory(&remote, sizeof(remote));
-      bytes = recvfrom(sock.sock,                             // socket
-                       reinterpret_cast<char *>(buf.data()),  // recv buf. reuse send buf
-                       static_cast<int>(buf.size()),          // buffer size
-                       0,                                     // flags
-                       reinterpret_cast<sockaddr *>(&remote), // client addr
-                       &client_len);                          // length of client addr
-      if (bytes != SOCKET_ERROR) {
-        sock.remote = remote; // save the remote
-      }
-    } else {
-      // just receive, we know the remote
-      bytes = recv(sock.sock,                            // socket
-                   reinterpret_cast<char *>(buf.data()), // recv buf. reuse send buf
-                   static_cast<int>(buf.size()),         // buffer size
-                   0);                                   // flags
-    }
+    int bytes = sock.receive_on_local_and_save_remote(reinterpret_cast<char *>(buf.data()), buf.size());
     const auto receive_time = get_timestamp_ns(); // save receive timestamp directly
 
     // handle errors
