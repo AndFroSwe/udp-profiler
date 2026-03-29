@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <numeric>
 
 // windows sockets wsa raii helper
@@ -164,19 +165,22 @@ private:
 
 // message payload information
 struct Payload {
+  uint32_t message_id;
   uint32_t message_size;
   int64_t server_send_timestamp_ns;
   int64_t client_receive_timestamp_ns;
+  int64_t client_send_timestamp_ns;
   int64_t server_receive_timestamp_ns;
-  int64_t message_id;
 };
 
 // measurement data
 struct Measurement {
   uint32_t sends;
   uint32_t errors;
-  std::vector<int64_t> rtt;              // round trip measurements
-  std::vector<int64_t> client_to_server; // time from client receive to server response receive
+  std::vector<int64_t> server_send_timestamp_ns;
+  std::vector<int64_t> client_receive_timestamp_ns;
+  std::vector<int64_t> client_send_timestamp_ns;
+  std::vector<int64_t> server_receive_timestamp_ns;
 };
 
 struct KPIs {
@@ -196,7 +200,7 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   return (old_ema * (1 - WEIGHT)) + (new_value * WEIGHT);
 }
 
-[[nodiscard]] inline int64_t get_timestamp_ns() {
+[[nodiscard]] inline int64_t get_steady_timestamp_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
@@ -213,22 +217,30 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   return m[lo] + (frac * (m[hi] - m[lo])); // linear interpolation
 }
 
-[[nodiscard]] inline KPIs calculate_kpis(std::vector<int64_t> &m) {
-  assert(!m.empty() && "cant get results of empty vector");
+[[nodiscard]] inline KPIs calculate_kpis(std::vector<int64_t> &t0, std::vector<int64_t> &t1, int64_t offset) {
+  assert(!t0.empty() && !t1.empty() && "cant get results of empty vector");
+  const size_t n = t0.size();
+  assert(t0.size() == t1.size() && "kpi vectors not equal length");
+  assert(t0[0] <= t1[0] && "t0 times should be before t1");
 
-  std::ranges::sort(m); // need to sort for median
-  const size_t n = m.size();
+  std::vector<int64_t> res(n); // results vector
+  // calculate the diffs
+  for (size_t i = 0; i < n; i++) {
+    res[i] = t1[i] - t0[i] + offset;
+  }
+
+  std::ranges::sort(res); // need to sort for median
 
   // use double to avoid overflow
-  double total = std::accumulate(m.begin(), m.end(), 0.0); // sum up
-  double mean = total / n;                                 // get the mean
+  double total = std::accumulate(res.begin(), res.end(), 0.0); // sum up
+  double mean = total / n;                                     // get the mean
 
   // calculate standard deviation
   // use the loop to get min and max as well
   int64_t max_val = 0;
   int64_t min_val = 0;
   double sq_sum = 0.0;
-  for (const int64_t v : m) {
+  for (const int64_t v : res) {
     double diff = v - mean;
     sq_sum += diff * diff;
 
@@ -241,14 +253,41 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   // save the kpis
   KPIs kpi;
   kpi.mean = mean;
-  kpi.median = (n % 2 == 0) ? (m[n / 2] + m[(n / 2) - 1]) / 2.0 // even: avg two middles NOLINT(readability-magic*)
-                            : m[n / 2];                         // odd: middle element
+  kpi.median = (n % 2 == 0) ? (res[n / 2] + res[(n / 2) - 1]) / 2.0 // even: avg two middles NOLINT(readability-magic*)
+                            : res[n / 2];                           // odd: middle element
   kpi.stddev = std::sqrt(sq_sum / divisor);
   kpi.max_val = max_val;
   kpi.min_val = min_val;
-  kpi.p95 = percentile(m, 0.95); // NOLINT(readability-magic*)
+  kpi.p95 = percentile(res, 0.95); // NOLINT(readability-magic*)
 
   return kpi;
+}
+
+[[nodiscard]] inline bool is_localhost(const std::string_view addr) {
+  return addr == "127.0.0.1";
+}
+
+// use cristians algorithm to calculate clock offset
+[[nodiscard]] inline int64_t calculate_clock_offset(const Measurement &m) {
+  assert(!m.server_send_timestamp_ns.empty() && !m.client_receive_timestamp_ns.empty() &&
+         !m.client_send_timestamp_ns.empty() && !m.server_receive_timestamp_ns.empty() && "invalid measurements");
+
+  const size_t n = m.server_receive_timestamp_ns.size();
+
+  assert(m.server_send_timestamp_ns.size() == n && m.client_receive_timestamp_ns.size() == n &&
+         m.client_send_timestamp_ns.size() == n && m.server_receive_timestamp_ns.size() == n &&
+         "measurements not equal length");
+
+  std::vector<double> offsets(n);
+  for (size_t i = 0; i < n; i++) {
+    offsets[i] = ((m.client_receive_timestamp_ns[i] - m.server_send_timestamp_ns[i]) -
+                  (m.server_receive_timestamp_ns[i] - m.client_send_timestamp_ns[i])) /
+                 2.0; // NOLINT(readability-magic*)
+  }
+
+  // return median offset
+  std::sort(offsets.begin(), offsets.end());
+  return (n % 2 == 0) ? (offsets[n / 2] + offsets[(n / 2) - 1]) / 2.0 : offsets[n / 2]; // NOLINT(readability-magic*)
 }
 
 // common parameters

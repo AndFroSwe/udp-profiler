@@ -103,7 +103,7 @@ Example:
     // wait incoming message
 
     int bytes = sock.receive_on_local_and_save_remote(reinterpret_cast<char *>(buf.data()), buf.size());
-    const auto receive_time = get_timestamp_ns(); // save receive timestamp directly
+    const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp directly
 
     // handle errors
     if (bytes == SOCKET_ERROR) {
@@ -127,6 +127,7 @@ Example:
     payload->client_receive_timestamp_ns = receive_time;
 
     // send reply
+    payload->client_send_timestamp_ns = get_steady_timestamp_ns();
     if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), static_cast<int>(payload->message_size)) ==
         SOCKET_ERROR) {
       continue;

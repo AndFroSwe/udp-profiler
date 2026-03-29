@@ -139,11 +139,13 @@ Example:
       .sends = 0,
       .errors = 0,
   };
-  measure.rtt.reserve(cycles);              // reserve space for measurements
-  measure.client_to_server.reserve(cycles); // reserver space for measurements
+  measure.server_send_timestamp_ns.reserve(cycles);    // reserver space for measurements
+  measure.client_receive_timestamp_ns.reserve(cycles); // reserve space for measurements
+  measure.client_send_timestamp_ns.reserve(cycles);    // reserver space for measurements
+  measure.server_receive_timestamp_ns.reserve(cycles); // reserve space for measurements
 
   // send loop
-  int64_t message_id = 0;                                // initialize
+  uint32_t message_id = 0;                               // initialize
   while (g_should_run.load(std::memory_order_acquire) && // ctrl+c handler
          message_id < cycles &&                          // desired attempts
          measure.errors + measure.sends < cycles)        // early escape
@@ -160,15 +162,17 @@ Example:
 
     // create the payload
     Payload payload{
-        .message_size = message_size,                   // info about message size
-        .server_send_timestamp_ns = get_timestamp_ns(), // set current timestamp
-        .client_receive_timestamp_ns = 0,               // initialize
-        .server_receive_timestamp_ns = 0,
-        .message_id = message_id // add the message id
+        .message_id = message_id,         // add the message id
+        .message_size = message_size,     // info about message size
+        .server_send_timestamp_ns = 0,    // initialize
+        .client_receive_timestamp_ns = 0, // initialize
+        .client_send_timestamp_ns = 0,    // initialize
+        .server_receive_timestamp_ns = 0, // initialize
     };
     memcpy(buf.data(), &payload, sizeof(payload)); // copy to beginning of buffer
 
     // send payload
+    payload.server_send_timestamp_ns = get_steady_timestamp_ns();
     if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), buf.size()) ==
         SOCKET_ERROR) { // receiver struct size
       measure.errors++;
@@ -177,7 +181,7 @@ Example:
 
     // wait for return message
     int bytes = sock.receive_on_local(reinterpret_cast<char *>(buf.data()), buf.size());
-    const auto receive_time = get_timestamp_ns(); // save receive timestamp on reception
+    const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp on reception
 
     // handle errors
     if (bytes == SOCKET_ERROR) {
@@ -210,8 +214,10 @@ Example:
     }
 
     // update measurements
-    measure.rtt.emplace_back(payload.server_receive_timestamp_ns - payload.server_send_timestamp_ns);
-    measure.client_to_server.emplace_back(payload.server_receive_timestamp_ns - payload.client_receive_timestamp_ns);
+    measure.server_send_timestamp_ns.emplace_back(payload.server_send_timestamp_ns);
+    measure.client_receive_timestamp_ns.emplace_back(payload.client_receive_timestamp_ns);
+    measure.client_send_timestamp_ns.emplace_back(payload.client_send_timestamp_ns);
+    measure.server_receive_timestamp_ns.emplace_back(payload.server_receive_timestamp_ns);
     measure.sends++;
 
     // update measurement
@@ -245,12 +251,25 @@ Example:
   }
 
   std::cout << "Measurements done, calculating KPIs...\n";
+  std::cout << "Clock offset...\n";
+  int64_t clock_offset = 0;
+  if (is_localhost(addr)) {
+    std::cout << "Running on localhost, assuming clock offset = 0!\n";
+  } else {
+    clock_offset = calculate_clock_offset(measure);
+  }
+
   std::cout << "RTT...\n";
-  const auto rtt_kpi = calculate_kpis(measure.rtt);
+  const auto kpi_rtt = calculate_kpis(measure.server_send_timestamp_ns, measure.server_receive_timestamp_ns, 0);
 
   std::cout << "Client to Server times...\n";
-  const auto rtt_cts = calculate_kpis(measure.client_to_server);
+  const auto kpi_cts =
+      calculate_kpis(measure.client_send_timestamp_ns, measure.server_receive_timestamp_ns, clock_offset);
   std::cout << "Done!\n";
+
+  std::cout << "Server to Client times...\n";
+  const auto kpi_stc =
+      calculate_kpis(measure.server_send_timestamp_ns, measure.client_receive_timestamp_ns, -clock_offset);
 
   // helper
   constexpr auto TO_US = [](const int64_t ns) -> double { // NOLINT(readability-*)
@@ -262,15 +281,21 @@ Example:
   std::cout << "------------------------\n";
   std::cout << std::format("Sends: {}\n", measure.sends);
   std::cout << std::format("Errors: {}\n", measure.errors);
+  std::cout << std::format("Clock offset (server - client): {} ns", clock_offset);
 
-  std::cout << "\t\t   RTT\t   CtS\n";
-  std::cout << std::format("Mean [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.mean), TO_US(rtt_cts.mean));
-  std::cout << std::format("Median [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.median), TO_US(rtt_cts.median));
-  std::cout << std::format("Stddev [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.stddev), TO_US(rtt_cts.stddev));
-  std::cout << std::format("Max [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.max_val), TO_US(rtt_cts.max_val));
-  std::cout << std::format("Min [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.min_val), TO_US(rtt_cts.min_val));
-  std::cout << std::format("P95 [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.p95), TO_US(rtt_cts.p95));
-
+  std::cout << "\n\t\t   RTT\t   CtS\t   StC\n";
+  std::cout << std::format("Mean [us]\t{:6.1f}\t{:6.1f}\t{:6.1f}\n", TO_US(kpi_rtt.mean), TO_US(kpi_cts.mean),
+                           TO_US(kpi_stc.mean));
+  std::cout << std::format("Median [us]\t{:6.1f}\t{:6.1f}\t{:6.1f}\n", TO_US(kpi_rtt.median), TO_US(kpi_cts.median),
+                           TO_US(kpi_stc.median));
+  std::cout << std::format("Stddev [us]\t{:6.1f}\t{:6.1f}\t{:6.1f}\n", TO_US(kpi_rtt.stddev), TO_US(kpi_cts.stddev),
+                           TO_US(kpi_stc.stddev));
+  std::cout << std::format("Max [us]\t{:6.1f}\t{:6.1f}\t{:6.1f}\n", TO_US(kpi_rtt.max_val), TO_US(kpi_cts.max_val),
+                           TO_US(kpi_stc.max_val));
+  std::cout << std::format("Min [us]\t{:6.1f}\t{:6.1f}\t{:6.1f}\n", TO_US(kpi_rtt.min_val), TO_US(kpi_cts.min_val),
+                           TO_US(kpi_stc.min_val));
+  std::cout << std::format("P95 [us]\t{:6.1f}\t{:6.1f}\t{:6.1f}\n", TO_US(kpi_rtt.p95), TO_US(kpi_cts.p95),
+                           TO_US(kpi_stc.p95));
   std::cout << "\nEnding program!\n";
 
   return 0;
