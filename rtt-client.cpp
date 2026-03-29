@@ -43,7 +43,15 @@ constexpr int SOCKET_TIMEOUT_MS = 1000; // socket receive timeout
 // main program
 int main(int argc, char **argv) {
   // setup app options
-  CLI::App app{R"(rtt-client)"};
+  CLI::App app{R"(RTT Client - Receives UDP packets from the server and echoes them back.
+
+
+Listens on a given address and port for incoming packets from rtt-server,
+timestamps them on arrival, and sends them back to the server.
+
+Example:
+  rtt-client -a 192.168.1.10 -p 5000)"};
+
   argv = app.ensure_utf8(argv);
   app.set_version_flag("-v,--version", std::format("{}.{}", VERSION_MAJOR, VERSION_MINOR), "Print version and exit");
 
