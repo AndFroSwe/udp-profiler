@@ -51,11 +51,11 @@ struct WSARAII {
 };
 
 // socket raii helper class
-struct SockRAII {
+struct Connection {
   SOCKET sock;
 
-  SockRAII() : sock(INVALID_SOCKET) {}
-  ~SockRAII() {
+  Connection() : sock(INVALID_SOCKET) {}
+  ~Connection() {
     if (sock != INVALID_SOCKET) {
       closesocket(sock);
     }
@@ -144,7 +144,7 @@ int main(int argc, char **argv) {
   }
 
   // initialize the socket
-  SockRAII sock;
+  Connection sock;
   if (!sock.init()) {
     std::cerr << "could not initialize socket\n";
     return 1;

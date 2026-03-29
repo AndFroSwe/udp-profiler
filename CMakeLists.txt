@@ -14,3 +14,13 @@ add_executable(udp-profile udp-profile.cpp)
 target_link_libraries(udp-profile
   PRIVATE ws2_32 winmm CLI11::CLI11
 )
+
+add_executable(rtt-server rtt-server.cpp)
+target_link_libraries(rtt-server
+  PRIVATE ws2_32 winmm CLI11::CLI11
+)
+
+add_executable(rtt-client rtt-client.cpp)
+target_link_libraries(rtt-client
+  PRIVATE ws2_32 winmm CLI11::CLI11
+)
