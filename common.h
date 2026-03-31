@@ -66,19 +66,38 @@ public:
   Connection() = default;
 
   ~Connection() {
+    close();
+  }
+
+  void close() {
     if (sock != INVALID_SOCKET) {
       closesocket(sock);
     }
+    sock = INVALID_SOCKET;
   }
 
-  bool init() {
+  bool init(int socket_timeout_ms) {
     // cant init twice
     if (sock != INVALID_SOCKET) {
       return false;
     }
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
-    return sock != INVALID_SOCKET;
+    if (sock == INVALID_SOCKET) {
+      return false;
+    }
+
+    // set socket timeout
+    const auto timeout_ms = static_cast<DWORD>(socket_timeout_ms); // 1 second
+    if (setsockopt(sock,                                           // socket
+                   SOL_SOCKET, SO_RCVTIMEO,                        // timeout
+                   reinterpret_cast<const char *>(&timeout_ms),    // timeout
+                   sizeof(timeout_ms)                              // size
+                   ) == SOCKET_ERROR) {
+      return false;
+    }
+
+    return true;
   }
 
   bool bind_local(const std::string_view ip, const uint16_t port) {

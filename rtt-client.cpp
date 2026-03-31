@@ -80,7 +80,7 @@ Example:
 
   // initialize the socket
   Connection sock;
-  if (!sock.init()) {
+  if (!sock.init(SOCKET_TIMEOUT_MS)) {
     std::cerr << "could not initialize socket\n";
     return 1;
   }

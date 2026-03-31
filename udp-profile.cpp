@@ -35,8 +35,9 @@ BOOL WINAPI sig_handler(DWORD sig) {
 }
 
 // parameters
-constexpr int VERSION_MAJOR = 1; // major version
-constexpr int VERSION_MINOR = 0; // minor version
+constexpr int VERSION_MAJOR = 1;        // major version
+constexpr int VERSION_MINOR = 0;        // minor version
+constexpr int SOCKET_TIMEOUT_MS = 1000; // timeout for socket receive
 
 // main program
 int main(int argc, char **argv) {
@@ -89,7 +90,7 @@ int main(int argc, char **argv) {
 
   // initialize the socket
   Connection sock;
-  if (!sock.init()) {
+  if (!sock.init(SOCKET_TIMEOUT_MS)) {
     std::cerr << "could not initialize socket\n";
     return 1;
   }

@@ -86,16 +86,8 @@ Example:
 
   // initialize the socket
   Connection sock;
-  if (!sock.init()) {
+  if (!sock.init(SOCKET_TIMEOUT_MS)) {
     std::cerr << "could not initialize socket\n";
-    return 1;
-  }
-
-  // set socket timeout
-  DWORD timeout_ms = SOCKET_TIMEOUT_MS; // 1 second
-  if (setsockopt(sock.sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout_ms), sizeof(timeout_ms)) ==
-      SOCKET_ERROR) {
-    std::cerr << "could not set socket timeout\n";
     return 1;
   }
 
