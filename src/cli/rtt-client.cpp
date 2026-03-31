@@ -70,11 +70,6 @@ Example:
   // start initializing
   // initialize winsock
   std::cout << std::format("Starting rtt-client v{}.{}\n", VERSION_MAJOR, VERSION_MINOR);
-  WSARAII wsa;
-  if (!wsa.init()) {
-    std::cerr << "could not initialize wsa\n";
-    return 1;
-  }
 
   // initialize the socket
   Connection sock;
@@ -109,33 +104,38 @@ Example:
     i++;
 
     // wait incoming message
-    int bytes = sock.receive_on_local_and_save_remote(reinterpret_cast<char *>(buf.data()), buf.size());
+    const auto res = sock.receive_on_local_and_save_remote(buf);
     const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp directly
 
-    // handle errors
-    if (bytes == SOCKET_ERROR) {
-      if (WSAGetLastError() == WSAETIMEDOUT) {
-        // handle timeout
-        if (bounces == 0) {
-          // no connection yet, wait for connection
-          std::cout << std::format("\rWaiting for connection [{}]", SPINNER[i % SPINNER.size()]);
-        } else {
-          if (steady_clock::now() - last_measurement > wait_for) {
-            // timeout reached while measuring, measurement done
-            const auto measured_for = last_measurement - start_measurement_time;
-            std::cout << std::format("\nMeasurement done! Bounced {} times for {:.1f} s, restarting...\n", bounces,
-                                     duration<double>(measured_for).count());
-
-            // reset status
-            bounces = 0;         // reset
-            sock.reset_remote(); // prepare for new connection
-          }
-        }
+    switch (res.ret) {
+    case ReturnCode::TIMEOUT:
+      if (bounces == 0) {
+        // no connection yet, wait for connection
+        std::cout << std::format("\rWaiting for connection [{}]", SPINNER[i % SPINNER.size()]);
       } else {
-        // handle other errors
+        if (steady_clock::now() - last_measurement > wait_for) {
+          // timeout reached while measuring, measurement done
+          const auto measured_for = last_measurement - start_measurement_time;
+          std::cout << std::format("\nMeasurement done! Bounced {} times for {:.1f} s, restarting...\n", bounces,
+                                   duration<double>(measured_for).count());
+          // reset status
+          bounces = 0;         // reset
+          sock.reset_remote(); // prepare for new connection
+        }
       }
-      continue; // timeout or error, restart receive loop
-    } // error handling
+      continue; // restart loop
+    case ReturnCode::OK:
+      break;
+    case ReturnCode::ICMP:
+    case ReturnCode::WSA_ERROR:
+    case ReturnCode::SOCKET_INIT_ERROR:
+    case ReturnCode::SEND_ERROR:
+    case ReturnCode::RECEIVE_ERROR:
+    case ReturnCode::NO_REMOTE:
+    case ReturnCode::NO_LOCAL:
+    case ReturnCode::WRONG_SIZE:
+      continue; // ignore other errors, restart
+    }
 
     // got message, start measuring time
     if (bounces == 0) {
@@ -149,9 +149,8 @@ Example:
     payload->client_send_timestamp_ns = get_steady_timestamp_ns();
 
     // send reply
-    if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), static_cast<int>(payload->message_size)) ==
-        SOCKET_ERROR) {
-      continue;
+    if (const auto res = sock.send_to_remote(buf, payload->message_size); res.ret != ReturnCode::OK) {
+      continue; // error went bad, restart
     }
     last_measurement = steady_clock::now(); // save time
     bounces++;                              // successful bounce

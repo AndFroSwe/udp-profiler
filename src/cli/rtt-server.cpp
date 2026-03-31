@@ -78,11 +78,6 @@ Example:
   // start initializing
   // initialize winsock
   std::cout << std::format("Starting rtt-server v{}.{}\n", VERSION_MAJOR, VERSION_MINOR);
-  WSARAII wsa;
-  if (!wsa.init()) {
-    std::cerr << "could not initialize wsa\n";
-    return 1;
-  }
 
   // initialize the socket
   Connection sock;
@@ -167,40 +162,40 @@ Example:
     memcpy(buf.data(), &payload, sizeof(payload)); // copy to beginning of buffer
 
     // send payload
-    if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), buf.size()) ==
-        SOCKET_ERROR) { // receiver struct size
+    if (auto res = sock.send_to_remote(buf); res.ret != ReturnCode::OK) {
       measure.errors++;
       continue;
     }
 
     // wait for return message
-    int bytes = sock.receive_on_local(reinterpret_cast<char *>(buf.data()), buf.size());
+    auto res = sock.receive_on_local(buf);
     const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp on reception
 
-    // handle errors
-    if (bytes == SOCKET_ERROR) {
-      const auto err = WSAGetLastError(); // get the error
-      switch (err) {
-      case WSAETIMEDOUT:
-        if (measure.sends == 0) {
-          // haven't gotten anything yet
-          std::cout << std::format("\rWaiting for client [{}]", SPINNER[i % SPINNER.size()]);
-        } else {
-          // measurement in progress, log error on timeout
-          measure.errors++;
-        }
-      case WSAECONNRESET:
-        continue; // ICMP error on last send
-      default:
-        std::cerr << err << '\n' << std::flush;
-        assert(false && "unknown WSA error code");
+    switch (res.ret) {
+    case ReturnCode::TIMEOUT:
+      if (measure.sends == 0) {
+        // haven't gotten anything yet
+        std::cout << std::format("\rWaiting for client [{}]", SPINNER[i % SPINNER.size()]);
+      } else {
+        // measurement in progress, log error on timeout
+        measure.errors++;
       }
-
-      continue;
+    case ReturnCode::ICMP: // windows error when send had no recipient
+      continue;            // just ignore
+    case ReturnCode::OK:   // expected case
+      break;
+    case ReturnCode::WRONG_SIZE:
+    case ReturnCode::SEND_ERROR:
+    case ReturnCode::RECEIVE_ERROR:
+    case ReturnCode::NO_REMOTE:
+    case ReturnCode::NO_LOCAL:
+    case ReturnCode::WSA_ERROR:
+    case ReturnCode::SOCKET_INIT_ERROR:
+      assert(false && "invalid return from receive");
     }
 
     // decode received message
-    if (bytes != message_size) {
+    if (res.bytes != message_size) {
       measure.errors++;
       continue;
     }

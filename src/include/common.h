@@ -4,13 +4,6 @@
 #define UNICODE
 #endif
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <WinSock2.h>
-#include <Windows.h>
-#include <ws2ipdef.h>
-#include <ws2tcpip.h>
-
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -20,38 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <numeric>
-#include <optional>
-#include <string>
 #include <vector>
-
-// windows sockets wsa raii helper
-struct WSARAII {
-  WSAData wsa;
-  bool is_init;
-
-  WSARAII() : is_init(false) {
-  }
-  ~WSARAII() {
-    if (is_init) {
-      WSACleanup();
-    }
-  }
-
-  bool init() {
-    // cant initialize twice
-    if (is_init) {
-      return false;
-    }
-
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-      return false;
-    }
-    is_init = true;
-    return true;
-  }
-};
-
-// socket raii helper class
 
 // message payload information
 struct Payload {
@@ -73,6 +35,7 @@ struct Measurement {
   std::vector<int64_t> server_receive_timestamp_ns;
 };
 
+// measurement kpis
 struct KPIs {
   int64_t mean;
   int64_t median;

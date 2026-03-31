@@ -75,15 +75,6 @@ int main(int argc, char **argv) {
 
   CLI11_PARSE(app, argc, argv);
 
-  // start initializing
-  // initialize winsock
-  std::cout << std::format("Starting udp-profiler v{}.{}\n", VERSION_MAJOR, VERSION_MINOR);
-  WSARAII wsa;
-  if (!wsa.init()) {
-    std::cerr << "could not initialize wsa\n";
-    return 1;
-  }
-
   // initialize the socket
   Connection sock;
   if (!sock.init(SOCKET_TIMEOUT_MS)) {
@@ -133,7 +124,7 @@ int main(int argc, char **argv) {
 
     // actual send
     memcpy(buf.data(), &sends, sizeof(sends));
-    if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), static_cast<int>(buf.size())) == 0) {
+    if (const auto res = sock.send_to_remote(buf); res.ret != ReturnCode::OK) {
       errors++;
       continue;
     }

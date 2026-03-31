@@ -5,15 +5,66 @@
 #include <ws2ipdef.h>
 #include <ws2tcpip.h>
 
+#include <cassert>
+#include <iostream>
+
 namespace {
 // helper for setting local or remote
 bool set_target(std::optional<sockaddr_in> &target, std::string_view ip, uint16_t port);
+
+// windows sockets wsa raii helper
+struct WSARAII {
+  WSAData wsa;
+  bool is_init;
+
+  WSARAII() : is_init(false) {
+  }
+  ~WSARAII() {
+    if (is_init) {
+      WSACleanup();
+    }
+  }
+
+  bool init() {
+    // cant initialize twice
+    if (is_init) {
+      return false;
+    }
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+      return false;
+    }
+    is_init = true;
+    return true;
+  }
+};
+
+// helper for creating a successful return send/receive
+constexpr TranscieveResult make_ok(int bytes) {
+  assert(bytes > 0 && "less than 1 byte in make_ok");
+
+  return {
+      .bytes = bytes,
+      .ret = ReturnCode::OK,
+  };
+}
+
+// helper for making error on send/receive
+constexpr TranscieveResult make_error(ReturnCode ret) {
+  assert(ret != ReturnCode::OK && "OK in make_error makes no sense");
+
+  return {
+      .bytes = 0,
+      .ret = ret,
+  };
+}
 } // namespace
 
 struct Connection::Impl {
   SOCKET sock = INVALID_SOCKET;
   std::optional<sockaddr_in> local;
   std::optional<sockaddr_in> remote;
+  std::optional<WSARAII> wsa;
 };
 
 Connection::Connection() noexcept {
@@ -32,6 +83,15 @@ void Connection::close() {
 }
 
 bool Connection::init(int socket_timeout_ms) {
+  // only init once
+  if (!m_impl->wsa) {
+    m_impl->wsa = WSARAII();
+    if (!m_impl->wsa->init()) {
+      m_impl = {};
+      return false;
+    }
+  }
+
   // cant init twice
   if (m_impl->sock != INVALID_SOCKET) {
     return false;
@@ -49,6 +109,7 @@ bool Connection::init(int socket_timeout_ms) {
                  reinterpret_cast<const char *>(&timeout_ms),    // timeout
                  sizeof(timeout_ms)                              // size
                  ) == SOCKET_ERROR) {
+    closesocket(m_impl->sock);
     return false;
   }
 
@@ -72,10 +133,10 @@ bool Connection::bind_local(const std::string_view ip, const uint16_t port) {
 }
 
 // use recvfrom if has no remote, otherwise just receive
-int Connection::receive_on_local_and_save_remote(char *data, size_t bufsize) {
+TranscieveResult Connection::receive_on_local_and_save_remote(std::vector<std::byte> &buf) {
   // must have local to receive
   if (!m_impl->local) {
-    return SOCKET_ERROR;
+    return make_error(ReturnCode::NO_LOCAL);
   }
 
   int bytes = 0;
@@ -84,8 +145,8 @@ int Connection::receive_on_local_and_save_remote(char *data, size_t bufsize) {
     sockaddr_in new_remote;
     ZeroMemory(&new_remote, sizeof(new_remote));
     bytes = recvfrom(m_impl->sock,                              // socket
-                     data,                                      // recv buf. reuse send buf
-                     static_cast<int>(bufsize),                 // buffer size
+                     reinterpret_cast<char *>(buf.data()),      // recv buf. reuse send buf
+                     static_cast<int>(buf.size()),              // buffer size
                      0,                                         // flags
                      reinterpret_cast<sockaddr *>(&new_remote), // client addr
                      &client_len);                              // length of client addr
@@ -94,43 +155,91 @@ int Connection::receive_on_local_and_save_remote(char *data, size_t bufsize) {
     }
   } else {
     // just receive, we know the remote
-    bytes = recv(m_impl->sock,              // m_impl->socket
-                 data,                      // recv buf. reuse send buf
-                 static_cast<int>(bufsize), // buffer size
-                 0);                        // flags
+    bytes = recv(m_impl->sock,                         // m_impl->socket
+                 reinterpret_cast<char *>(buf.data()), // recv buf. reuse send buf
+                 static_cast<int>(buf.size()),         // buffer size
+                 0);                                   // flags
   }
 
-  return bytes;
+  // handle errors
+  if (bytes < 0) {
+    const auto err = WSAGetLastError(); // get the error
+    switch (err) {
+    case WSAETIMEDOUT:
+      return make_error(ReturnCode::TIMEOUT);
+      break;
+    case WSAECONNRESET:
+      return make_error(ReturnCode::ICMP);
+      break;
+    case WSAEMSGSIZE:
+      return make_error(ReturnCode::WRONG_SIZE);
+      break;
+    default:
+      assert(false && "unknown error on receive_on_local_and_save_remote");
+      break;
+    }
+  }
+
+  return make_ok(bytes);
 }
 
 bool Connection::create_remote(const std::string_view ip, const uint16_t port) {
   return set_target(m_impl->remote, ip, port);
 }
-
-int Connection::send_to_remote(const char *data, const size_t bufsize) {
+TranscieveResult Connection::send_to_remote(const std::vector<std::byte> &buf, std::optional<size_t> bufsize) {
   // need a remote to send value
   if (!m_impl->remote) {
-    return SOCKET_ERROR;
+    return make_error(ReturnCode::NO_REMOTE);
   }
 
-  return sendto(m_impl->sock,                                          // m_impl->socket
-                data,                                                  // buf
-                static_cast<int>(bufsize),                             // buf len
-                0,                                                     // flags
-                reinterpret_cast<sockaddr *>(&m_impl->remote.value()), // receiver
-                sizeof(m_impl->remote.value()));                       // receiver struct size
+  int res = sendto(m_impl->sock,                               // m_impl->socket
+                   reinterpret_cast<const char *>(buf.data()), // buf
+                   bufsize.has_value() ?                       // if given a size by callee
+                       static_cast<int>(*bufsize)
+                                       :                                  // use that
+                       static_cast<int>(buf.size()),                      // otherwise entire buffer
+                   0,                                                     // flags
+                   reinterpret_cast<sockaddr *>(&m_impl->remote.value()), // receiver
+                   sizeof(m_impl->remote.value()));                       // receiver struct size
+
+  if (res != buf.size()) {
+    return make_error(ReturnCode::SEND_ERROR);
+  }
+
+  return make_ok(res);
 }
 
-int Connection::receive_on_local(char *data, const size_t bufsize) const {
+TranscieveResult Connection::receive_on_local(std::vector<std::byte> &buf) const {
   // need local to send
   if (!m_impl->local) {
-    return 0;
+    return make_error(ReturnCode::NO_LOCAL);
   }
 
-  return recv(m_impl->sock,              // m_impl->socket
-              data,                      // recv buf. reuse send buf
-              static_cast<int>(bufsize), // buffer size
-              0);                        // flags
+  int bytes = recv(m_impl->sock,                         // m_impl->socket
+                   reinterpret_cast<char *>(buf.data()), // buf
+                   static_cast<int>(buf.size()),         // buf len
+                   0);                                   // flags
+
+  // handle errors
+  if (bytes < 0) {
+    const auto err = WSAGetLastError(); // get the error
+    switch (err) {
+    case WSAETIMEDOUT:
+      return make_error(ReturnCode::TIMEOUT);
+      break;
+    case WSAECONNRESET:
+      return make_error(ReturnCode::ICMP);
+      break;
+    case WSAEMSGSIZE:
+      return make_error(ReturnCode::WRONG_SIZE);
+      break;
+    default:
+      assert(false && "unknown error on receive_on_local");
+      break;
+    }
+  }
+
+  return make_ok(bytes);
 }
 
 void Connection::reset_remote() {

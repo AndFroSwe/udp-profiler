@@ -4,6 +4,25 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
+
+enum class ReturnCode : uint8_t {
+  OK,                // no error
+  WSA_ERROR,         // could not init WSA
+  SOCKET_INIT_ERROR, // could not init socket
+  SEND_ERROR,        // general send error
+  RECEIVE_ERROR,     // general receive error
+  NO_REMOTE,         // no remote to send to
+  NO_LOCAL,          // no local to receive on
+  TIMEOUT,           // timeout on receive
+  ICMP,              // ICMP error, no receipient
+  WRONG_SIZE,        // did not get/send expected size
+};
+
+struct TranscieveResult {
+  int bytes;
+  ReturnCode ret;
+};
 
 class Connection {
 public:
@@ -22,9 +41,9 @@ public:
   bool create_remote(std::string_view ip, uint16_t port);
 
   // use recvfrom if has no remote, otherwise just receive
-  int send_to_remote(const char *data, size_t bufsize);
-  int receive_on_local(char *data, size_t bufsize) const;
-  int receive_on_local_and_save_remote(char *data, size_t bufsize);
+  TranscieveResult send_to_remote(const std::vector<std::byte> &buf, std::optional<size_t> bufsize = {});
+  TranscieveResult receive_on_local(std::vector<std::byte> &buf) const;
+  TranscieveResult receive_on_local_and_save_remote(std::vector<std::byte> &buf);
 
   void reset_remote();
   std::optional<ip_addr> get_remote_info();
