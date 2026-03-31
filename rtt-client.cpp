@@ -1,12 +1,9 @@
 #ifndef UNICODE
 #define UNICODE
-#include <winerror.h>
 #endif
 
 #include "CLI/CLI.hpp"
 #include "common.h"
-
-#include <timeapi.h>
 
 #include <atomic>
 #include <chrono>
@@ -20,6 +17,7 @@ using namespace std::chrono_literals;
 using namespace std::chrono;
 
 // handle ctrl+c signals
+#include <consoleapi.h>
 std::atomic<bool> g_should_run = true; // send loop run flag
 BOOL WINAPI sig_handler(DWORD sig) {
   switch (sig) {

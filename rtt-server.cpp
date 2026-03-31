@@ -5,8 +5,6 @@
 #include "CLI/CLI.hpp"
 #include "common.h"
 
-#include <timeapi.h>
-
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -19,6 +17,7 @@
 using namespace std::chrono_literals;
 
 // handle ctrl+c signals
+#include <consoleapi.h>
 std::atomic<bool> g_should_run = true; // send loop run flag
 BOOL WINAPI sig_handler(DWORD sig) {
   switch (sig) {

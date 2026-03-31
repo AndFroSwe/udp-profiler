@@ -5,12 +5,6 @@
 #include "CLI/CLI.hpp"
 #include "common.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <WinSock2.h>
-#include <Windows.h>
-#include <timeapi.h>
-#include <ws2tcpip.h>
-
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -23,6 +17,7 @@
 using namespace std::chrono_literals;
 
 // handle ctrl+c signals
+#include <consoleapi.h>
 std::atomic<bool> g_should_run = true; // send loop run flag
 BOOL WINAPI sig_handler(DWORD sig) {
   switch (sig) {
