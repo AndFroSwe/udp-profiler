@@ -4,6 +4,7 @@
 
 #include "CLI/CLI.hpp"
 #include "common.h"
+#include "connection.h"
 
 #include <atomic>
 #include <chrono>
@@ -11,7 +12,6 @@
 #include <format>
 #include <iostream>
 #include <string>
-#include <vector>
 
 using namespace std::chrono_literals;
 using namespace std::chrono;

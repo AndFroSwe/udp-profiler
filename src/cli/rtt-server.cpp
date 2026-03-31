@@ -4,6 +4,7 @@
 
 #include "CLI/CLI.hpp"
 #include "common.h"
+#include "connection.h"
 
 #include <atomic>
 #include <chrono>
