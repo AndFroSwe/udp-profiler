@@ -1,5 +1,6 @@
 #ifndef UNICODE
 #define UNICODE
+#include <winerror.h>
 #endif
 
 #include "CLI/CLI.hpp"
@@ -8,6 +9,7 @@
 #include <timeapi.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -15,6 +17,7 @@
 #include <vector>
 
 using namespace std::chrono_literals;
+using namespace std::chrono;
 
 // handle ctrl+c signals
 std::atomic<bool> g_should_run = true; // send loop run flag
@@ -29,9 +32,10 @@ BOOL WINAPI sig_handler(DWORD sig) {
 }
 
 // parameters
-constexpr int VERSION_MAJOR = 1;        // major version
-constexpr int VERSION_MINOR = 0;        // minor version
-constexpr int SOCKET_TIMEOUT_MS = 1000; // socket receive timeout
+constexpr int VERSION_MAJOR = 1;       // major version
+constexpr int VERSION_MINOR = 0;       // minor version
+constexpr auto PRINT_INTERVAL = 1s;    // how often to print status
+constexpr int SOCKET_TIMEOUT_MS = 500; // how long to wait for socket to do something
 
 // main program
 int main(int argc, char **argv) {
@@ -55,6 +59,13 @@ Example:
   app.add_option("-p,--port", port, "Receiver port")
       ->required(true)
       ->check(CLI::Range(static_cast<uint16_t>(0), UINT16_MAX));
+
+  uint32_t timeout_ms = 0;
+  app.add_option(
+         "-t,--timeout", timeout_ms,
+         std::format("How many ms to wait for receive before breaking measurement (rounded up to nearest {} ms)",
+                     SOCKET_TIMEOUT_MS))
+      ->default_val(2000); // NOLINT(readability-magic-*)
 
   CLI11_PARSE(app, argc, argv);
 
@@ -81,15 +92,15 @@ Example:
   }
 
   // set socket timeout
-  DWORD timeout_ms = SOCKET_TIMEOUT_MS; // 1 second
-  if (setsockopt(sock.sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout_ms), sizeof(timeout_ms)) ==
-      SOCKET_ERROR) {
+  const auto socket_timeout_ms = static_cast<DWORD>(SOCKET_TIMEOUT_MS);
+  if (setsockopt(sock.sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&socket_timeout_ms),
+                 sizeof(socket_timeout_ms)) == SOCKET_ERROR) {
     std::cerr << "could not set socket timeout\n";
     return 1;
   }
 
   // setup done, start sending
-  std::cout << std::format("Setup done, listening on {}:{}\n", addr, port);
+  std::cout << std::format("Setup done, listening on {}:{}. CTRL+C to quit.\n", addr, port);
   SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
   g_should_run.store(true);                 // activate write cycle
 
@@ -98,10 +109,16 @@ Example:
   memset(buf.data(), 0, buf.size());                   // zero out all data
 
   // send loop
-  int64_t bounces = 0;
+  int64_t bounces = 0;                               // number of bounces in a measurement
+  size_t i = 0;                                      // total number of cycles
+  const auto wait_for = milliseconds(timeout_ms);    // wait for this long before considering measurement done
+  auto last_measurement = steady_clock::now();       // last time successful measurement was reached
+  auto start_measurement_time = steady_clock::now(); // keep track of measurment time
+  auto next_print = steady_clock::now();             // keep track of status prints
   while (g_should_run.load(std::memory_order_acquire)) {
-    // wait incoming message
+    i++;
 
+    // wait incoming message
     int bytes = sock.receive_on_local_and_save_remote(reinterpret_cast<char *>(buf.data()), buf.size());
     const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp directly
 
@@ -110,34 +127,62 @@ Example:
       if (WSAGetLastError() == WSAETIMEDOUT) {
         // handle timeout
         if (bounces == 0) {
-          std::cout << "Got receive timeout, trying again...\n";
+          // no connection yet, wait for connection
+          std::cout << std::format("\rWaiting for connection [{}]", SPINNER[i % SPINNER.size()]);
         } else {
-          std::cout << "Measurement done, exiting...\n";
-          break;
+          if (steady_clock::now() - last_measurement > wait_for) {
+            // timeout reached while measuring, measurement done
+            const auto measured_for = last_measurement - start_measurement_time;
+            std::cout << std::format("\nMeasurement done! Bounced {} times for {:.1f} s, restarting...\n", bounces,
+                                     duration<double>(measured_for).count());
+
+            // reset status
+            bounces = 0;         // reset
+            sock.reset_remote(); // prepare for new connection
+          }
         }
       } else {
         // handle other errors
       }
-      continue;
+      continue; // timeout or error, restart receive loop
+    } // error handling
+
+    // got message, start measuring time
+    if (bounces == 0) {
+      start_measurement_time = steady_clock::now();
     }
 
     // set new data to buffer
     // todo: receive size check should be at least payload
     Payload *payload = reinterpret_cast<Payload *>(buf.data());
     payload->client_receive_timestamp_ns = receive_time;
+    payload->client_send_timestamp_ns = get_steady_timestamp_ns();
 
     // send reply
-    payload->client_send_timestamp_ns = get_steady_timestamp_ns();
     if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), static_cast<int>(payload->message_size)) ==
         SOCKET_ERROR) {
       continue;
     }
+    last_measurement = steady_clock::now(); // save time
+    bounces++;                              // successful bounce
 
-    bounces++;
+    // save the print for here to not disturb the first measurement
+    if (steady_clock::now() > next_print) {
+      while (next_print < steady_clock::now()) {
+        next_print += PRINT_INTERVAL;
+      }
+
+      const auto remote_info = sock.get_remote_info();
+      if (remote_info) {
+        std::cout << std::format("\r    Bouncing {} bytes to {}:{}. Bounces: {}", //
+                                 payload->message_size,                           // payload size
+                                 remote_info->ip, remote_info->port,              // remote info
+                                 bounces);                                        // bounces
+      } else {
+        assert(false && "should have remote here");
+      }
+    }
   }
-
-  // print measurements
-  std::cout << std::format("Bounced {} times\n", bounces);
 
   std::cout << "\nEnding program!\n";
 

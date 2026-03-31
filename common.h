@@ -1,18 +1,28 @@
 #pragma once
 
+#ifndef UNICODE
+#define UNICODE
+#endif
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <WinSock2.h>
 #include <Windows.h>
+#include <ws2ipdef.h>
 #include <ws2tcpip.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <numeric>
+#include <optional>
+#include <string>
+#include <vector>
 
 // windows sockets wsa raii helper
 struct WSARAII {
@@ -44,6 +54,11 @@ struct WSARAII {
 // socket raii helper class
 class Connection {
 public:
+  struct ip_addr {
+    std::string ip;
+    uint16_t port;
+  };
+
   SOCKET sock = INVALID_SOCKET;
   std::optional<sockaddr_in> local;
   std::optional<sockaddr_in> remote;
@@ -144,6 +159,23 @@ public:
                 0);                        // flags
   }
 
+  void reset_remote() {
+    if (remote) {
+      remote = {};
+    }
+  }
+
+  std::optional<ip_addr> get_remote_info() {
+    if (!remote) {
+      return {};
+    }
+
+    char buf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(remote->sin_addr), buf, sizeof(buf));
+
+    return ip_addr{.ip = std::string(buf), .port = remote->sin_port};
+  }
+
 private:
   static bool set_target(std::optional<sockaddr_in> &target, const std::string_view ip, const uint16_t port) {
     sockaddr_in t;
@@ -217,19 +249,30 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   return m[lo] + (frac * (m[hi] - m[lo])); // linear interpolation
 }
 
-[[nodiscard]] inline KPIs calculate_kpis(std::vector<int64_t> &t0, std::vector<int64_t> &t1, int64_t offset) {
-  assert(!t0.empty() && !t1.empty() && "cant get results of empty vector");
-  const size_t n = t0.size();
-  assert(t0.size() == t1.size() && "kpi vectors not equal length");
-  assert(t0[0] <= t1[0] && "t0 times should be before t1");
+template <typename Fn, typename T>
+concept BinaryFn = requires(Fn f, T lhs, T rhs) {
+  { f(lhs, rhs) } -> std::convertible_to<T>;
+};
 
-  std::vector<int64_t> res(n); // results vector
-  // calculate the diffs
+template <typename T, BinaryFn<T> Fn>
+[[nodiscard]] std::vector<T> elementwise(const std::vector<T> &lhs, const std::vector<T> &rhs, Fn fn) {
+  assert(lhs.size() == rhs.size() && "elementwise on unequal lengths");
+
+  const size_t n = lhs.size();
+  std::vector<T> res(n);
+
   for (size_t i = 0; i < n; i++) {
-    res[i] = t1[i] - t0[i] + offset;
+    res[i] = fn(lhs[i], rhs[i]);
   }
 
-  std::ranges::sort(res); // need to sort for median
+  return res;
+}
+
+[[nodiscard]] inline KPIs calculate_kpis(const std::vector<int64_t> &v) {
+  const size_t n = v.size();
+
+  std::vector<int64_t> res(v); // copy to maodify
+  std::ranges::sort(res);      // need to sort for median
 
   // use double to avoid overflow
   double total = std::accumulate(res.begin(), res.end(), 0.0); // sum up
@@ -240,13 +283,13 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   int64_t max_val = 0;
   int64_t min_val = 0;
   double sq_sum = 0.0;
-  for (const int64_t v : res) {
-    double diff = v - mean;
+  for (const int64_t val : res) {
+    double diff = val - mean;
     sq_sum += diff * diff;
 
     // min max
-    max_val = std::max(v, max_val);
-    min_val = min_val == 0 ? v : std::min(v, min_val);
+    max_val = std::max(val, max_val);
+    min_val = min_val == 0 ? val : std::min(val, min_val);
   }
   const size_t divisor = n - 1; // for stddev
 
@@ -267,29 +310,7 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   return addr == "127.0.0.1";
 }
 
-// use cristians algorithm to calculate clock offset
-[[nodiscard]] inline int64_t calculate_clock_offset(const Measurement &m) {
-  assert(!m.server_send_timestamp_ns.empty() && !m.client_receive_timestamp_ns.empty() &&
-         !m.client_send_timestamp_ns.empty() && !m.server_receive_timestamp_ns.empty() && "invalid measurements");
-
-  const size_t n = m.server_receive_timestamp_ns.size();
-
-  assert(m.server_send_timestamp_ns.size() == n && m.client_receive_timestamp_ns.size() == n &&
-         m.client_send_timestamp_ns.size() == n && m.server_receive_timestamp_ns.size() == n &&
-         "measurements not equal length");
-
-  std::vector<double> offsets(n);
-  for (size_t i = 0; i < n; i++) {
-    offsets[i] = ((m.client_receive_timestamp_ns[i] - m.server_send_timestamp_ns[i]) -
-                  (m.server_receive_timestamp_ns[i] - m.client_send_timestamp_ns[i])) /
-                 2.0; // NOLINT(readability-magic*)
-  }
-
-  // return median offset
-  std::sort(offsets.begin(), offsets.end());
-  return (n % 2 == 0) ? (offsets[n / 2] + offsets[(n / 2) - 1]) / 2.0 : offsets[n / 2]; // NOLINT(readability-magic*)
-}
-
 // common parameters
-constexpr size_t MIN_MESSAGE_SIZE = sizeof(Payload); // need to send at least payload
-constexpr size_t MAX_MESSAGE_SIZE = 4096;            // max allowable message size
+constexpr size_t MIN_MESSAGE_SIZE = sizeof(Payload);                            // need to send at least payload
+constexpr size_t MAX_MESSAGE_SIZE = 4096;                                       // max allowable message size
+const std::array<char, 8> SPINNER = {'-', '\\', '|', '/', '-', '\\', '|', '/'}; // spinner glyphs
