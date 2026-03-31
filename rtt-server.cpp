@@ -31,9 +31,9 @@ BOOL WINAPI sig_handler(DWORD sig) {
 }
 
 // parameters
-constexpr int VERSION_MAJOR = 1;        // major version
-constexpr int VERSION_MINOR = 0;        // minor version
-constexpr int SOCKET_TIMEOUT_MS = 1000; // socket receive timeout
+constexpr int VERSION_MAJOR = 1;       // major version
+constexpr int VERSION_MINOR = 0;       // minor version
+constexpr int SOCKET_TIMEOUT_MS = 500; // socket receive timeout
 
 // main program
 int main(int argc, char **argv) {
@@ -68,7 +68,7 @@ Example:
                          static_cast<uint32_t>(MAX_MESSAGE_SIZE))); // and not be bigger that max allowed size
 
   uint32_t cycles = 0;
-  app.add_option("-c,--count", cycles, "Cycles to run test for")->default_val(100); // NOLINT(readability-magic*)
+  app.add_option("-c,--count", cycles, "Cycles to run test for")->default_val(500); // NOLINT(readability-magic*)
 
   double print_update_time = 0.0;
   app.add_option("-u,--update", print_update_time, "Time between update printouts [s]")->default_val(1.0);
@@ -112,7 +112,7 @@ Example:
   }
 
   // setup done, start sending
-  std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz {} times\n\n", message_size, addr, port, freq,
+  std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz {} times\n", message_size, addr, port, freq,
                            cycles);
   SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
   g_should_run.store(true);                 // activate write cycle
@@ -139,15 +139,19 @@ Example:
       .sends = 0,
       .errors = 0,
   };
-  measure.rtt.reserve(cycles);              // reserve space for measurements
-  measure.client_to_server.reserve(cycles); // reserver space for measurements
+  measure.server_send_timestamp_ns.reserve(cycles);    // reserver space for measurements
+  measure.client_receive_timestamp_ns.reserve(cycles); // reserve space for measurements
+  measure.client_send_timestamp_ns.reserve(cycles);    // reserver space for measurements
+  measure.server_receive_timestamp_ns.reserve(cycles); // reserve space for measurements
 
   // send loop
-  int64_t message_id = 0;                                // initialize
+  uint32_t i = 0;                                        // loop increment
+  uint32_t message_id = 0;                               // initialize
   while (g_should_run.load(std::memory_order_acquire) && // ctrl+c handler
-         message_id < cycles &&                          // desired attempts
-         measure.errors + measure.sends < cycles)        // early escape
+         message_id < cycles)                            // desired attempts
   {
+    i++;
+
     // calculate next send
     while (next_cycle_start < std::chrono::steady_clock::now()) {
       next_cycle_start += cycle_time;
@@ -160,12 +164,14 @@ Example:
 
     // create the payload
     Payload payload{
-        .message_size = message_size,                   // info about message size
-        .server_send_timestamp_ns = get_timestamp_ns(), // set current timestamp
-        .client_receive_timestamp_ns = 0,               // initialize
-        .server_receive_timestamp_ns = 0,
-        .message_id = message_id // add the message id
+        .message_id = message_id,         // add the message id
+        .message_size = message_size,     // info about message size
+        .server_send_timestamp_ns = 0,    // initialize
+        .client_receive_timestamp_ns = 0, // initialize
+        .client_send_timestamp_ns = 0,    // initialize
+        .server_receive_timestamp_ns = 0, // initialize
     };
+    payload.server_send_timestamp_ns = get_steady_timestamp_ns();
     memcpy(buf.data(), &payload, sizeof(payload)); // copy to beginning of buffer
 
     // send payload
@@ -177,21 +183,27 @@ Example:
 
     // wait for return message
     int bytes = sock.receive_on_local(reinterpret_cast<char *>(buf.data()), buf.size());
-    const auto receive_time = get_timestamp_ns(); // save receive timestamp on reception
+    const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp on reception
 
     // handle errors
     if (bytes == SOCKET_ERROR) {
-      if (WSAGetLastError() == WSAETIMEDOUT) {
-        // handle timeout
+      const auto err = WSAGetLastError(); // get the error
+      switch (err) {
+      case WSAETIMEDOUT:
         if (measure.sends == 0) {
-          std::cout << "Got receive timeout, trying again...\n";
+          // haven't gotten anything yet
+          std::cout << std::format("\rWaiting for client [{}]", SPINNER[i % SPINNER.size()]);
         } else {
+          // measurement in progress, log error on timeout
           measure.errors++;
         }
-      } else {
-        // handle other errors
-        measure.errors++;
+      case WSAECONNRESET:
+        continue; // ICMP error on last send
+      default:
+        std::cerr << err << '\n' << std::flush;
+        assert(false && "unknown WSA error code");
       }
+
       continue;
     }
 
@@ -209,9 +221,16 @@ Example:
       continue;
     }
 
+    // print here to not disturb measurements
+    if (measure.sends == 0) {
+      std::cout << "\nFound client!\n";
+    }
+
     // update measurements
-    measure.rtt.emplace_back(payload.server_receive_timestamp_ns - payload.server_send_timestamp_ns);
-    measure.client_to_server.emplace_back(payload.server_receive_timestamp_ns - payload.client_receive_timestamp_ns);
+    measure.server_send_timestamp_ns.emplace_back(payload.server_send_timestamp_ns);
+    measure.client_receive_timestamp_ns.emplace_back(payload.client_receive_timestamp_ns);
+    measure.client_send_timestamp_ns.emplace_back(payload.client_send_timestamp_ns);
+    measure.server_receive_timestamp_ns.emplace_back(payload.server_receive_timestamp_ns);
     measure.sends++;
 
     // update measurement
@@ -245,12 +264,15 @@ Example:
   }
 
   std::cout << "Measurements done, calculating KPIs...\n";
-  std::cout << "RTT...\n";
-  const auto rtt_kpi = calculate_kpis(measure.rtt);
+  std::cout << "Round-Trip-Time RTT...\n";
+  const auto kpi_rtt = calculate_kpis(elementwise(measure.server_receive_timestamp_ns, // T4
+                                                  measure.server_send_timestamp_ns,    // T1
+                                                  std::minus<int64_t>{}));             // take diff
 
-  std::cout << "Client to Server times...\n";
-  const auto rtt_cts = calculate_kpis(measure.client_to_server);
-  std::cout << "Done!\n";
+  std::cout << "Client handling time (Tc)...\n";
+  const auto kpi_tc = calculate_kpis(elementwise(measure.client_send_timestamp_ns,    // T3
+                                                 measure.client_receive_timestamp_ns, // T2
+                                                 std::minus<int64_t>{}));             // take diff
 
   // helper
   constexpr auto TO_US = [](const int64_t ns) -> double { // NOLINT(readability-*)
@@ -258,19 +280,18 @@ Example:
   };
 
   // print measurements
-  std::cout << "Measurement results:\n";
+  std::cout << "\nMeasurement results:\n";
   std::cout << "------------------------\n";
   std::cout << std::format("Sends: {}\n", measure.sends);
   std::cout << std::format("Errors: {}\n", measure.errors);
 
-  std::cout << "\t\t   RTT\t   CtS\n";
-  std::cout << std::format("Mean [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.mean), TO_US(rtt_cts.mean));
-  std::cout << std::format("Median [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.median), TO_US(rtt_cts.median));
-  std::cout << std::format("Stddev [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.stddev), TO_US(rtt_cts.stddev));
-  std::cout << std::format("Max [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.max_val), TO_US(rtt_cts.max_val));
-  std::cout << std::format("Min [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.min_val), TO_US(rtt_cts.min_val));
-  std::cout << std::format("P95 [us]\t{:6.1f}\t{:6.1f}\n", TO_US(rtt_kpi.p95), TO_US(rtt_cts.p95));
-
+  std::cout << "\n\t\t   RTT\t    Tc\n";
+  std::cout << std::format("Mean [us]\t{:6.2f}\t{:6.2f}\n", TO_US(kpi_rtt.mean), TO_US(kpi_tc.mean));
+  std::cout << std::format("Median [us]\t{:6.2f}\t{:6.2f}\n", TO_US(kpi_rtt.median), TO_US(kpi_tc.median));
+  std::cout << std::format("Stddev [us]\t{:6.2f}\t{:6.2f}\n", TO_US(kpi_rtt.stddev), TO_US(kpi_tc.stddev));
+  std::cout << std::format("Max [us]\t{:6.2f}\t{:6.2f}\n", TO_US(kpi_rtt.max_val), TO_US(kpi_tc.max_val));
+  std::cout << std::format("Min [us]\t{:6.2f}\t{:6.2f}\n", TO_US(kpi_rtt.min_val), TO_US(kpi_tc.min_val));
+  std::cout << std::format("P95 [us]\t{:6.2f}\t{:6.2f}\n", TO_US(kpi_rtt.p95), TO_US(kpi_tc.p95));
   std::cout << "\nEnding program!\n";
 
   return 0;

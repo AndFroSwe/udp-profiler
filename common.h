@@ -1,17 +1,28 @@
 #pragma once
 
+#ifndef UNICODE
+#define UNICODE
+#endif
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <WinSock2.h>
 #include <Windows.h>
+#include <ws2ipdef.h>
 #include <ws2tcpip.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
+#include <cstdlib>
 #include <numeric>
+#include <optional>
+#include <string>
+#include <vector>
 
 // windows sockets wsa raii helper
 struct WSARAII {
@@ -43,6 +54,11 @@ struct WSARAII {
 // socket raii helper class
 class Connection {
 public:
+  struct ip_addr {
+    std::string ip;
+    uint16_t port;
+  };
+
   SOCKET sock = INVALID_SOCKET;
   std::optional<sockaddr_in> local;
   std::optional<sockaddr_in> remote;
@@ -143,6 +159,23 @@ public:
                 0);                        // flags
   }
 
+  void reset_remote() {
+    if (remote) {
+      remote = {};
+    }
+  }
+
+  std::optional<ip_addr> get_remote_info() {
+    if (!remote) {
+      return {};
+    }
+
+    char buf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(remote->sin_addr), buf, sizeof(buf));
+
+    return ip_addr{.ip = std::string(buf), .port = remote->sin_port};
+  }
+
 private:
   static bool set_target(std::optional<sockaddr_in> &target, const std::string_view ip, const uint16_t port) {
     sockaddr_in t;
@@ -164,19 +197,22 @@ private:
 
 // message payload information
 struct Payload {
+  uint32_t message_id;
   uint32_t message_size;
   int64_t server_send_timestamp_ns;
   int64_t client_receive_timestamp_ns;
+  int64_t client_send_timestamp_ns;
   int64_t server_receive_timestamp_ns;
-  int64_t message_id;
 };
 
 // measurement data
 struct Measurement {
   uint32_t sends;
   uint32_t errors;
-  std::vector<int64_t> rtt;              // round trip measurements
-  std::vector<int64_t> client_to_server; // time from client receive to server response receive
+  std::vector<int64_t> server_send_timestamp_ns;
+  std::vector<int64_t> client_receive_timestamp_ns;
+  std::vector<int64_t> client_send_timestamp_ns;
+  std::vector<int64_t> server_receive_timestamp_ns;
 };
 
 struct KPIs {
@@ -196,7 +232,7 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   return (old_ema * (1 - WEIGHT)) + (new_value * WEIGHT);
 }
 
-[[nodiscard]] inline int64_t get_timestamp_ns() {
+[[nodiscard]] inline int64_t get_steady_timestamp_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
@@ -213,44 +249,68 @@ template <typename T> [[nodiscard]] constexpr T update_ema(T old_ema, T new_valu
   return m[lo] + (frac * (m[hi] - m[lo])); // linear interpolation
 }
 
-[[nodiscard]] inline KPIs calculate_kpis(std::vector<int64_t> &m) {
-  assert(!m.empty() && "cant get results of empty vector");
+template <typename Fn, typename T>
+concept BinaryFn = requires(Fn f, T lhs, T rhs) {
+  { f(lhs, rhs) } -> std::convertible_to<T>;
+};
 
-  std::ranges::sort(m); // need to sort for median
-  const size_t n = m.size();
+template <typename T, BinaryFn<T> Fn>
+[[nodiscard]] std::vector<T> elementwise(const std::vector<T> &lhs, const std::vector<T> &rhs, Fn fn) {
+  assert(lhs.size() == rhs.size() && "elementwise on unequal lengths");
+
+  const size_t n = lhs.size();
+  std::vector<T> res(n);
+
+  for (size_t i = 0; i < n; i++) {
+    res[i] = fn(lhs[i], rhs[i]);
+  }
+
+  return res;
+}
+
+[[nodiscard]] inline KPIs calculate_kpis(const std::vector<int64_t> &v) {
+  const size_t n = v.size();
+
+  std::vector<int64_t> res(v); // copy to maodify
+  std::ranges::sort(res);      // need to sort for median
 
   // use double to avoid overflow
-  double total = std::accumulate(m.begin(), m.end(), 0.0); // sum up
-  double mean = total / n;                                 // get the mean
+  double total = std::accumulate(res.begin(), res.end(), 0.0); // sum up
+  double mean = total / n;                                     // get the mean
 
   // calculate standard deviation
   // use the loop to get min and max as well
   int64_t max_val = 0;
   int64_t min_val = 0;
   double sq_sum = 0.0;
-  for (const int64_t v : m) {
-    double diff = v - mean;
+  for (const int64_t val : res) {
+    double diff = val - mean;
     sq_sum += diff * diff;
 
     // min max
-    max_val = std::max(v, max_val);
-    min_val = min_val == 0 ? v : std::min(v, min_val);
+    max_val = std::max(val, max_val);
+    min_val = min_val == 0 ? val : std::min(val, min_val);
   }
   const size_t divisor = n - 1; // for stddev
 
   // save the kpis
   KPIs kpi;
   kpi.mean = mean;
-  kpi.median = (n % 2 == 0) ? (m[n / 2] + m[(n / 2) - 1]) / 2.0 // even: avg two middles NOLINT(readability-magic*)
-                            : m[n / 2];                         // odd: middle element
+  kpi.median = (n % 2 == 0) ? (res[n / 2] + res[(n / 2) - 1]) / 2.0 // even: avg two middles NOLINT(readability-magic*)
+                            : res[n / 2];                           // odd: middle element
   kpi.stddev = std::sqrt(sq_sum / divisor);
   kpi.max_val = max_val;
   kpi.min_val = min_val;
-  kpi.p95 = percentile(m, 0.95); // NOLINT(readability-magic*)
+  kpi.p95 = percentile(res, 0.95); // NOLINT(readability-magic*)
 
   return kpi;
 }
 
+[[nodiscard]] inline bool is_localhost(const std::string_view addr) {
+  return addr == "127.0.0.1";
+}
+
 // common parameters
-constexpr size_t MIN_MESSAGE_SIZE = sizeof(Payload); // need to send at least payload
-constexpr size_t MAX_MESSAGE_SIZE = 4096;            // max allowable message size
+constexpr size_t MIN_MESSAGE_SIZE = sizeof(Payload);                            // need to send at least payload
+constexpr size_t MAX_MESSAGE_SIZE = 4096;                                       // max allowable message size
+const std::array<char, 8> SPINNER = {'-', '\\', '|', '/', '-', '\\', '|', '/'}; // spinner glyphs
