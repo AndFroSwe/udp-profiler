@@ -1,11 +1,7 @@
 #pragma once
 
-#define WIN32_LEAN_AND_MEAN
-#include <WinSock2.h>
-#include <ws2ipdef.h>
-#include <ws2tcpip.h>
-
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -16,12 +12,8 @@ public:
     uint16_t port;
   };
 
-  SOCKET sock = INVALID_SOCKET;
-  std::optional<sockaddr_in> local;
-  std::optional<sockaddr_in> remote;
-
-  Connection() = default;
-  ~Connection();
+  Connection() noexcept;
+  ~Connection() noexcept;
 
   void close();
 
@@ -38,6 +30,6 @@ public:
   std::optional<ip_addr> get_remote_info();
 
 private:
-  // helper function for setting remote or local
-  static bool set_target(std::optional<sockaddr_in> &target, std::string_view ip, uint16_t port);
+  struct Impl; // OS specific information
+  std::unique_ptr<Impl> m_impl;
 };

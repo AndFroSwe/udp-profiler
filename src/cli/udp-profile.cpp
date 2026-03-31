@@ -133,12 +133,7 @@ int main(int argc, char **argv) {
 
     // actual send
     memcpy(buf.data(), &sends, sizeof(sends));
-    if (sendto(sock.sock,                                          // socket
-               reinterpret_cast<const char *>(buf.data()),         // buf
-               static_cast<int>(buf.size()),                       // buf len
-               0,                                                  // flags
-               reinterpret_cast<sockaddr *>(&sock.remote.value()), // receiver
-               sizeof(sock.remote.value())) == SOCKET_ERROR) {     // receiver struct size
+    if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), static_cast<int>(buf.size())) == 0) {
       errors++;
       continue;
     }

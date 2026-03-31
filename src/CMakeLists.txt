@@ -24,10 +24,15 @@ target_include_directories(rtt-client
 )
 
 # libraries
-add_library(connection connection/connection.cpp)
-target_link_libraries(connection
-  PUBLIC ws2_32
-)
+add_library(connection)
 target_include_directories(connection
   PUBLIC connection
 )
+if(WIN32)
+  target_sources(connection PRIVATE connection/connection_win.cpp)
+  target_link_libraries(connection
+  PRIVATE ws2_32
+  )
+else()
+  message(FATAL_ERROR "not implemented on OS")
+endif()

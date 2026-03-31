@@ -89,14 +89,6 @@ Example:
     return 1;
   }
 
-  // set socket timeout
-  const auto socket_timeout_ms = static_cast<DWORD>(SOCKET_TIMEOUT_MS);
-  if (setsockopt(sock.sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&socket_timeout_ms),
-                 sizeof(socket_timeout_ms)) == SOCKET_ERROR) {
-    std::cerr << "could not set socket timeout\n";
-    return 1;
-  }
-
   // setup done, start sending
   std::cout << std::format("Setup done, listening on {}:{}. CTRL+C to quit.\n", addr, port);
   SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
