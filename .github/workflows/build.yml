@@ -29,15 +29,15 @@ jobs:
         with:
           name: binaries
           path: |
-            build/Release/rtt-server.exe
-            build/Release/rtt-client.exe
-            build/Release/udp-profile.exe
+            build/bin/Release/rtt-server.exe
+            build/bin/Release/rtt-client.exe
+            build/bin/Release/udp-profile.exe
 
       - name: Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            build/Release/rtt-server.exe
-            build/Release/rtt-client.exe
-            build/Release/udp-profile.exe
+            build/bin/Release/rtt-server.exe
+            build/bin/Release/rtt-client.exe
+            build/bin/Release/udp-profile.exe
