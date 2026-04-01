@@ -6,7 +6,6 @@
 #include <ws2tcpip.h>
 
 #include <cassert>
-#include <iostream>
 
 namespace {
 // helper for setting local or remote
@@ -71,11 +70,28 @@ Connection::Connection() noexcept {
   m_impl = std::make_unique<Impl>(); // create the pimpl
 }
 
+Connection::Connection(Connection &&other) noexcept : m_impl(std::move(other.m_impl)) {
+}
+
+Connection &Connection::operator=(Connection &&other) noexcept {
+  if (this != &other) {
+    close();                          // release own socket first
+    m_impl = std::move(other.m_impl); // steal others socket
+  }
+
+  return *this;
+}
+
 Connection::~Connection() noexcept {
   close();
 }
 
 void Connection::close() {
+  // must have m_impl to close
+  if (m_impl == nullptr) {
+    return;
+  }
+
   if (m_impl->sock != INVALID_SOCKET) {
     closesocket(m_impl->sock);
   }
