@@ -22,7 +22,8 @@ volatile sig_atomic_t g_should_run = 1; // main loop flag
 
 // parameters
 constexpr int VERSION_MAJOR = 1;        // major version
-constexpr int VERSION_MINOR = 0;        // minor version
+constexpr int VERSION_MINOR = 1;        // minor version
+constexpr int VERSION_BUG = 0;          // bugfix version
 constexpr int SOCKET_TIMEOUT_MS = 1000; // timeout for socket receive
 
 // main program
@@ -41,7 +42,8 @@ int main(int argc, char **argv) {
     udp_sender -a 192.168.1.10 -p 5000 -f 1000 -u 2.0 -s 128
   )"};
   argv = app.ensure_utf8(argv);
-  app.set_version_flag("-v,--version", std::format("{}.{}", VERSION_MAJOR, VERSION_MINOR), "Print version and exit");
+  app.set_version_flag("-v,--version", std::format("{}.{}.{}", VERSION_MAJOR, VERSION_MINOR, VERSION_BUG),
+                       "Print version and exit");
 
   std::string addr;
   app.add_option("-a,--address", addr, "IP address to send to")->default_val("127.0.0.1");
