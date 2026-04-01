@@ -1,14 +1,9 @@
-#ifndef UNICODE
-#define UNICODE
-#endif
-
 #include "CLI/CLI.hpp"
 #include "common.h"
+#include "connection.h"
 
-#include <timeapi.h>
-
-#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -18,17 +13,8 @@
 
 using namespace std::chrono_literals;
 
-// handle ctrl+c signals
-std::atomic<bool> g_should_run = true; // send loop run flag
-BOOL WINAPI sig_handler(DWORD sig) {
-  switch (sig) {
-  case CTRL_C_EVENT:
-    g_should_run.store(false, std::memory_order_release);
-    return TRUE;
-  default:
-    return FALSE;
-  }
-}
+// globals
+volatile sig_atomic_t g_should_run = 1; // main loop flag
 
 // parameters
 constexpr int VERSION_MAJOR = 1;       // major version
@@ -78,24 +64,11 @@ Example:
   // start initializing
   // initialize winsock
   std::cout << std::format("Starting rtt-server v{}.{}\n", VERSION_MAJOR, VERSION_MINOR);
-  WSARAII wsa;
-  if (!wsa.init()) {
-    std::cerr << "could not initialize wsa\n";
-    return 1;
-  }
 
   // initialize the socket
   Connection sock;
-  if (!sock.init()) {
+  if (!sock.init(SOCKET_TIMEOUT_MS)) {
     std::cerr << "could not initialize socket\n";
-    return 1;
-  }
-
-  // set socket timeout
-  DWORD timeout_ms = SOCKET_TIMEOUT_MS; // 1 second
-  if (setsockopt(sock.sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout_ms), sizeof(timeout_ms)) ==
-      SOCKET_ERROR) {
-    std::cerr << "could not set socket timeout\n";
     return 1;
   }
 
@@ -111,11 +84,17 @@ Example:
     return 1;
   }
 
+  // register ctrl+c handler
+  g_should_run = 1; // start cycle
+  std::signal(SIGINT, [](int sig) {
+    if (sig == SIGINT) {
+      g_should_run = 0;
+    }
+  });
+
   // setup done, start sending
   std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz {} times\n", message_size, addr, port, freq,
                            cycles);
-  SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
-  g_should_run.store(true);                 // activate write cycle
 
   // allocate data buffer
   auto buf = std::vector<std::byte>(message_size);
@@ -145,10 +124,10 @@ Example:
   measure.server_receive_timestamp_ns.reserve(cycles); // reserve space for measurements
 
   // send loop
-  uint32_t i = 0;                                        // loop increment
-  uint32_t message_id = 0;                               // initialize
-  while (g_should_run.load(std::memory_order_acquire) && // ctrl+c handler
-         message_id < cycles)                            // desired attempts
+  uint32_t i = 0;             // loop increment
+  uint32_t message_id = 0;    // initialize
+  while (g_should_run == 1 && // ctrl+c handler
+         message_id < cycles) // desired attempts
   {
     i++;
 
@@ -175,40 +154,40 @@ Example:
     memcpy(buf.data(), &payload, sizeof(payload)); // copy to beginning of buffer
 
     // send payload
-    if (sock.send_to_remote(reinterpret_cast<const char *>(buf.data()), buf.size()) ==
-        SOCKET_ERROR) { // receiver struct size
+    if (auto res = sock.send_to_remote(buf); res.ret != ReturnCode::OK) {
       measure.errors++;
       continue;
     }
 
     // wait for return message
-    int bytes = sock.receive_on_local(reinterpret_cast<char *>(buf.data()), buf.size());
+    auto res = sock.receive_on_local(buf);
     const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp on reception
 
-    // handle errors
-    if (bytes == SOCKET_ERROR) {
-      const auto err = WSAGetLastError(); // get the error
-      switch (err) {
-      case WSAETIMEDOUT:
-        if (measure.sends == 0) {
-          // haven't gotten anything yet
-          std::cout << std::format("\rWaiting for client [{}]", SPINNER[i % SPINNER.size()]);
-        } else {
-          // measurement in progress, log error on timeout
-          measure.errors++;
-        }
-      case WSAECONNRESET:
-        continue; // ICMP error on last send
-      default:
-        std::cerr << err << '\n' << std::flush;
-        assert(false && "unknown WSA error code");
+    switch (res.ret) {
+    case ReturnCode::TIMEOUT:
+      if (measure.sends == 0) {
+        // haven't gotten anything yet
+        std::cout << std::format("\rWaiting for client [{}]", SPINNER[i % SPINNER.size()]);
+      } else {
+        // measurement in progress, log error on timeout
+        measure.errors++;
       }
-
-      continue;
+    case ReturnCode::ICMP: // windows error when send had no recipient
+      continue;            // just ignore
+    case ReturnCode::OK:   // expected case
+      break;
+    case ReturnCode::WRONG_SIZE:
+    case ReturnCode::SEND_ERROR:
+    case ReturnCode::RECEIVE_ERROR:
+    case ReturnCode::NO_REMOTE:
+    case ReturnCode::NO_LOCAL:
+    case ReturnCode::WSA_ERROR:
+    case ReturnCode::SOCKET_INIT_ERROR:
+      assert(false && "invalid return from receive");
     }
 
     // decode received message
-    if (bytes != message_size) {
+    if (res.bytes != message_size) {
       measure.errors++;
       continue;
     }

@@ -4,15 +4,10 @@
 
 #include "CLI/CLI.hpp"
 #include "common.h"
+#include "connection.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <WinSock2.h>
-#include <Windows.h>
-#include <timeapi.h>
-#include <ws2tcpip.h>
-
-#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -22,21 +17,13 @@
 
 using namespace std::chrono_literals;
 
-// handle ctrl+c signals
-std::atomic<bool> g_should_run = true; // send loop run flag
-BOOL WINAPI sig_handler(DWORD sig) {
-  switch (sig) {
-  case CTRL_C_EVENT:
-    g_should_run.store(false, std::memory_order_release);
-    return TRUE;
-  default:
-    return FALSE;
-  }
-}
+// globals
+volatile sig_atomic_t g_should_run = 1; // main loop flag
 
 // parameters
-constexpr int VERSION_MAJOR = 1; // major version
-constexpr int VERSION_MINOR = 0; // minor version
+constexpr int VERSION_MAJOR = 1;        // major version
+constexpr int VERSION_MINOR = 0;        // minor version
+constexpr int SOCKET_TIMEOUT_MS = 1000; // timeout for socket receive
 
 // main program
 int main(int argc, char **argv) {
@@ -78,18 +65,9 @@ int main(int argc, char **argv) {
 
   CLI11_PARSE(app, argc, argv);
 
-  // start initializing
-  // initialize winsock
-  std::cout << std::format("Starting udp-profiler v{}.{}\n", VERSION_MAJOR, VERSION_MINOR);
-  WSARAII wsa;
-  if (!wsa.init()) {
-    std::cerr << "could not initialize wsa\n";
-    return 1;
-  }
-
   // initialize the socket
   Connection sock;
-  if (!sock.init()) {
+  if (!sock.init(SOCKET_TIMEOUT_MS)) {
     std::cerr << "could not initialize socket\n";
     return 1;
   }
@@ -100,10 +78,16 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // register ctrl c handler
+  g_should_run = 1;
+  std::signal(SIGINT, [](int sig) {
+    if (sig == SIGINT) {
+      g_should_run = 0;
+    }
+  });
+
   // setup done, start sending
   std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz\n", message_size, addr, port, freq);
-  SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
-  g_should_run.store(true);
 
   // send data definition
   // allocate padded buffer
@@ -123,7 +107,7 @@ int main(int argc, char **argv) {
   auto next_printout_time = std::chrono::steady_clock::now();
 
   // send loop
-  while (g_should_run.load(std::memory_order_acquire)) {
+  while (g_should_run == 1) {
     // calculate next send
     while (next_cycle_start < std::chrono::steady_clock::now()) {
       next_cycle_start += cycle_time;
@@ -136,12 +120,7 @@ int main(int argc, char **argv) {
 
     // actual send
     memcpy(buf.data(), &sends, sizeof(sends));
-    if (sendto(sock.sock,                                          // socket
-               reinterpret_cast<const char *>(buf.data()),         // buf
-               static_cast<int>(buf.size()),                       // buf len
-               0,                                                  // flags
-               reinterpret_cast<sockaddr *>(&sock.remote.value()), // receiver
-               sizeof(sock.remote.value())) == SOCKET_ERROR) {     // receiver struct size
+    if (const auto res = sock.send_to_remote(buf); res.ret != ReturnCode::OK) {
       errors++;
       continue;
     }
