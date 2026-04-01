@@ -1,13 +1,9 @@
-#ifndef UNICODE
-#define UNICODE
-#endif
-
 #include "CLI/CLI.hpp"
 #include "common.h"
 #include "connection.h"
 
-#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -16,18 +12,8 @@
 using namespace std::chrono_literals;
 using namespace std::chrono;
 
-// handle ctrl+c signals
-#include <consoleapi.h>
-std::atomic<bool> g_should_run = true; // send loop run flag
-BOOL WINAPI sig_handler(DWORD sig) {
-  switch (sig) {
-  case CTRL_C_EVENT:
-    g_should_run.store(false, std::memory_order_release);
-    return TRUE;
-  default:
-    return FALSE;
-  }
-}
+// globals
+volatile sig_atomic_t g_should_run = 1; // main loop flag
 
 // parameters
 constexpr int VERSION_MAJOR = 1;       // major version
@@ -84,10 +70,17 @@ Example:
     return 1;
   }
 
+  // register ctrl c signal handler
+  std::signal(SIGINT, [](int sig) {
+    if (sig == SIGINT) {
+      g_should_run = 0;
+    }
+    return;
+  });
+  g_should_run = 1; // activate write cycle
+
   // setup done, start sending
   std::cout << std::format("Setup done, listening on {}:{}. CTRL+C to quit.\n", addr, port);
-  SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
-  g_should_run.store(true);                 // activate write cycle
 
   // allocate data buffer
   auto buf = std::vector<std::byte>(MAX_MESSAGE_SIZE); // reserve size to fit a message
@@ -100,13 +93,14 @@ Example:
   auto last_measurement = steady_clock::now();       // last time successful measurement was reached
   auto start_measurement_time = steady_clock::now(); // keep track of measurment time
   auto next_print = steady_clock::now();             // keep track of status prints
-  while (g_should_run.load(std::memory_order_acquire)) {
+  while (g_should_run == 1) {
     i++;
 
     // wait incoming message
     const auto res = sock.receive_on_local_and_save_remote(buf);
     const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp directly
 
+    // handle return code
     switch (res.ret) {
     case ReturnCode::TIMEOUT:
       if (bounces == 0) {

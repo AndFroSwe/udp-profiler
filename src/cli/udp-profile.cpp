@@ -6,8 +6,8 @@
 #include "common.h"
 #include "connection.h"
 
-#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -17,18 +17,8 @@
 
 using namespace std::chrono_literals;
 
-// handle ctrl+c signals
-#include <consoleapi.h>
-std::atomic<bool> g_should_run = true; // send loop run flag
-BOOL WINAPI sig_handler(DWORD sig) {
-  switch (sig) {
-  case CTRL_C_EVENT:
-    g_should_run.store(false, std::memory_order_release);
-    return TRUE;
-  default:
-    return FALSE;
-  }
-}
+// globals
+volatile sig_atomic_t g_should_run = 1; // main loop flag
 
 // parameters
 constexpr int VERSION_MAJOR = 1;        // major version
@@ -88,10 +78,16 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // register ctrl c handler
+  g_should_run = 1;
+  std::signal(SIGINT, [](int sig) {
+    if (sig == SIGINT) {
+      g_should_run = 0;
+    }
+  });
+
   // setup done, start sending
   std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz\n", message_size, addr, port, freq);
-  SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
-  g_should_run.store(true);
 
   // send data definition
   // allocate padded buffer
@@ -111,7 +107,7 @@ int main(int argc, char **argv) {
   auto next_printout_time = std::chrono::steady_clock::now();
 
   // send loop
-  while (g_should_run.load(std::memory_order_acquire)) {
+  while (g_should_run == 1) {
     // calculate next send
     while (next_cycle_start < std::chrono::steady_clock::now()) {
       next_cycle_start += cycle_time;

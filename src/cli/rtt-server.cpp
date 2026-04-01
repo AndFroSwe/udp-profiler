@@ -1,13 +1,9 @@
-#ifndef UNICODE
-#define UNICODE
-#endif
-
 #include "CLI/CLI.hpp"
 #include "common.h"
 #include "connection.h"
 
-#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -17,18 +13,8 @@
 
 using namespace std::chrono_literals;
 
-// handle ctrl+c signals
-#include <consoleapi.h>
-std::atomic<bool> g_should_run = true; // send loop run flag
-BOOL WINAPI sig_handler(DWORD sig) {
-  switch (sig) {
-  case CTRL_C_EVENT:
-    g_should_run.store(false, std::memory_order_release);
-    return TRUE;
-  default:
-    return FALSE;
-  }
-}
+// globals
+volatile sig_atomic_t g_should_run = 1; // main loop flag
 
 // parameters
 constexpr int VERSION_MAJOR = 1;       // major version
@@ -98,11 +84,17 @@ Example:
     return 1;
   }
 
+  // register ctrl+c handler
+  g_should_run = 1; // start cycle
+  std::signal(SIGINT, [](int sig) {
+    if (sig == SIGINT) {
+      g_should_run = 0;
+    }
+  });
+
   // setup done, start sending
   std::cout << std::format("Setup done!\nSending {} byte to {}:{} @ {} Hz {} times\n", message_size, addr, port, freq,
                            cycles);
-  SetConsoleCtrlHandler(sig_handler, TRUE); // handle ctrl+c
-  g_should_run.store(true);                 // activate write cycle
 
   // allocate data buffer
   auto buf = std::vector<std::byte>(message_size);
@@ -132,10 +124,10 @@ Example:
   measure.server_receive_timestamp_ns.reserve(cycles); // reserve space for measurements
 
   // send loop
-  uint32_t i = 0;                                        // loop increment
-  uint32_t message_id = 0;                               // initialize
-  while (g_should_run.load(std::memory_order_acquire) && // ctrl+c handler
-         message_id < cycles)                            // desired attempts
+  uint32_t i = 0;             // loop increment
+  uint32_t message_id = 0;    // initialize
+  while (g_should_run == 1 && // ctrl+c handler
+         message_id < cycles) // desired attempts
   {
     i++;
 
