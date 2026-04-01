@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
 
     // actual send
     memcpy(buf.data(), &sends, sizeof(sends));
-    if (const auto res = sock.send_to_remote(buf); res.ret != ReturnCode::OK) {
+    if (const auto res = sock.send(buf); res.ret != ReturnCode::OK) {
       errors++;
       continue;
     }

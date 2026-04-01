@@ -202,7 +202,7 @@ TranscieveResult Connection::receive_on_local_and_save_remote(std::vector<std::b
 bool Connection::create_remote(const std::string_view ip, const uint16_t port) {
   return set_target(m_impl->remote, ip, port);
 }
-TranscieveResult Connection::send_to_remote(const std::vector<std::byte> &buf, std::optional<size_t> bufsize) {
+TranscieveResult Connection::send(const std::vector<std::byte> &buf, std::optional<size_t> bufsize) {
   // need a remote to send value
   if (!m_impl->remote) {
     return make_error(ReturnCode::NO_REMOTE);
@@ -222,10 +222,19 @@ TranscieveResult Connection::send_to_remote(const std::vector<std::byte> &buf, s
     return make_error(ReturnCode::SEND_ERROR);
   }
 
+  // get local ephemereal port if we dont already have a local port
+  if (!m_impl->local) {
+    sockaddr_in local{};
+    int len = sizeof(local);
+    if (getsockname(m_impl->sock, reinterpret_cast<sockaddr *>(&local), &len) == 0) {
+      m_impl->local = local;
+    }
+  }
+
   return make_ok(res);
 }
 
-TranscieveResult Connection::receive_on_local(std::vector<std::byte> &buf) const {
+TranscieveResult Connection::receive(std::vector<std::byte> &buf) const {
   // need local to send
   if (!m_impl->local) {
     return make_error(ReturnCode::NO_LOCAL);

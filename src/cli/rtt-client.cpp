@@ -145,7 +145,7 @@ Example:
     payload->client_send_timestamp_ns = get_steady_timestamp_ns();
 
     // send reply
-    if (const auto res = sock.send_to_remote(buf, payload->message_size); res.ret != ReturnCode::OK) {
+    if (const auto res = sock.send(buf, payload->message_size); res.ret != ReturnCode::OK) {
       continue; // error went bad, restart
     }
     last_measurement = steady_clock::now(); // save time

@@ -220,4 +220,4 @@ constexpr size_t MIN_MESSAGE_SIZE = sizeof(Payload); ///< Minimum datagram size.
 constexpr size_t MAX_MESSAGE_SIZE = 4096;            ///< Maximum supported datagram size in bytes.
 const std::array<char, 8> SPINNER = {'-', '\\', '|', '/',
                                      '-', '\\', '|', '/'}; ///< Glyph sequence for a console spinner animation.
-const char* g_wildcard_addr = "0.0.0.0"; ///< wildcard address for binding to any NIC 
+const char *g_wildcard_addr = "0.0.0.0";                   ///< wildcard address for binding to any NIC

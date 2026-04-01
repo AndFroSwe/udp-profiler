@@ -78,13 +78,6 @@ Example:
     return 1;
   }
 
-  // bind to local port to listen
-  if (!sock.bind_local(g_wildcard_addr, // use wildcard address to listen to all incoming
-                       port + 1)) {     // pick a port to listen to
-    std::cerr << "could not bind to local address";
-    return 1;
-  }
-
   // register ctrl+c handler
   g_should_run = 1; // start cycle
   std::signal(SIGINT, [](int sig) {
@@ -155,13 +148,13 @@ Example:
     memcpy(buf.data(), &payload, sizeof(payload)); // copy to beginning of buffer
 
     // send payload
-    if (auto res = sock.send_to_remote(buf); res.ret != ReturnCode::OK) {
+    if (auto res = sock.send(buf); res.ret != ReturnCode::OK) {
       measure.errors++;
       continue;
     }
 
     // wait for return message
-    auto res = sock.receive_on_local(buf);
+    auto res = sock.receive(buf);
     const auto receive_time = get_steady_timestamp_ns(); // save receive timestamp on reception
 
     switch (res.ret) {

@@ -163,7 +163,7 @@ public:
    * @return A @c TranscieveResult with @c ReturnCode::OK and the byte count
    *         on success, or an appropriate error code otherwise.
    */
-  TranscieveResult send_to_remote(const std::vector<std::byte> &buf, std::optional<size_t> bufsize = {});
+  TranscieveResult send(const std::vector<std::byte> &buf, std::optional<size_t> bufsize = {});
 
   /**
    * @brief Receives a datagram on the bound local socket.
@@ -179,7 +179,7 @@ public:
    *         on success, or an error code (@c TIMEOUT, @c ICMP, @c WRONG_SIZE,
    *         etc.) on failure.
    */
-  TranscieveResult receive_on_local(std::vector<std::byte> &buf) const;
+  TranscieveResult receive(std::vector<std::byte> &buf) const;
 
   /**
    * @brief Receives a datagram and captures the sender as the new remote.
