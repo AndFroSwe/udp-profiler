@@ -134,6 +134,8 @@ Example:
     // got message, start measuring time
     if (bounces == 0) {
       start_measurement_time = steady_clock::now();
+      next_print = steady_clock::now(); // to avoid long while loop update times in print loop
+      std::cout << '\n';                // prepare for the next print
     }
 
     // set new data to buffer

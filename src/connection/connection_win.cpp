@@ -218,7 +218,7 @@ TranscieveResult Connection::send_to_remote(const std::vector<std::byte> &buf, s
                    reinterpret_cast<sockaddr *>(&m_impl->remote.value()), // receiver
                    sizeof(m_impl->remote.value()));                       // receiver struct size
 
-  if (res != buf.size()) {
+  if (res != bufsize.value_or(buf.size())) {
     return make_error(ReturnCode::SEND_ERROR);
   }
 

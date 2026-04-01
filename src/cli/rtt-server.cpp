@@ -79,7 +79,8 @@ Example:
   }
 
   // bind to local port to listen
-  if (!sock.bind_local(addr, port + 1)) {
+  if (!sock.bind_local(g_wildcard_addr, // use wildcard address to listen to all incoming
+                       port + 1)) {     // pick a port to listen to
     std::cerr << "could not bind to local address";
     return 1;
   }
