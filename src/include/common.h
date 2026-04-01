@@ -216,8 +216,7 @@ template <typename T, BinaryFn<T> Fn>
   return addr == "127.0.0.1";
 }
 
-constexpr size_t MIN_MESSAGE_SIZE = sizeof(Payload); ///< Minimum datagram size. At least sizeof(@c Payload)
-constexpr size_t MAX_MESSAGE_SIZE = 4096;            ///< Maximum supported datagram size in bytes.
-const std::array<char, 8> SPINNER = {'-', '\\', '|', '/',
-                                     '-', '\\', '|', '/'}; ///< Glyph sequence for a console spinner animation.
+constexpr size_t MIN_MESSAGE_SIZE = sizeof(Payload);       ///< Minimum datagram size. At least sizeof(@c Payload)
+constexpr size_t MAX_MESSAGE_SIZE = 4096;                  ///< Maximum supported datagram size in bytes.
+const std::array<char, 4> SPINNER = {'-', '\\', '|', '/'}; ///< Glyph sequence for a console spinner animation.
 const char *g_wildcard_addr = "0.0.0.0";                   ///< wildcard address for binding to any NIC
