@@ -44,6 +44,7 @@ enum class ReturnCode : uint8_t {
   TIMEOUT,           ///< Receive timed out (no data within the configured window).
   ICMP,              ///< ICMP "port unreachable" — no listener at the remote address.
   WRONG_SIZE,        ///< The datagram size did not match the supplied buffer.
+  INTERRUPTED,       ///< Socket was interrupted
 };
 
 /**

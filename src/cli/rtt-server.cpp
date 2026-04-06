@@ -44,7 +44,7 @@ Example:
   uint16_t port = 0;
   app.add_option("-p,--port", port, "Receiver port")
       ->required(true)
-      ->check(CLI::Range(static_cast<uint16_t>(0), UINT16_MAX));
+      ->check(CLI::Range(static_cast<uint16_t>(0), static_cast<uint16_t>(UINT16_MAX)));
 
   uint32_t freq = 0;
   app.add_option("-f,--freq", freq, "Send frequency [Hz]")->default_val(500); // NOLINT(readability-magic*)
@@ -163,14 +163,16 @@ Example:
     case ReturnCode::TIMEOUT:
       if (measure.sends == 0) {
         // haven't gotten anything yet
-        std::cout << std::format("\rWaiting for client [{}]", SPINNER[i % SPINNER.size()]);
+        std::cout << std::format("\rWaiting for client [{}]", SPINNER[i % SPINNER.size()]) << std::flush;
       } else {
         // measurement in progress, log error on timeout
         measure.errors++;
       }
-    case ReturnCode::ICMP: // windows error when send had no recipient
-      continue;            // just ignore
-    case ReturnCode::OK:   // expected case
+    case ReturnCode::ICMP:        // windows error when send had no recipient
+      continue;                   // just ignore
+    case ReturnCode::INTERRUPTED: // ctrl+c on linux
+      continue;                   // ignore, should abort if ctrl+c was pressed
+    case ReturnCode::OK:          // expected case
       break;
     case ReturnCode::WRONG_SIZE:
     case ReturnCode::SEND_ERROR:
@@ -222,9 +224,12 @@ Example:
 
     // print status sometimes
     if (std::chrono::steady_clock::now() >= next_printout_time) {
-      std::cout << std::format("\rMeasured {}/{} [{:2.0f} %] Current freq: {:6.2f} Hz", message_id, cycles,
+      std::cout << std::format("\rMeasured {}/{} [{:2.0f} %] Current freq: {:6.2f} Hz",
+                               message_id,                                     //
+                               cycles,                                         //
                                static_cast<double>(message_id) / cycles * 100, // NOLINT(readability-magic*)
-                               ema_send_freq);
+                               ema_send_freq)
+                << std::flush;
       // calculate next printout time
       while (next_printout_time < std::chrono::steady_clock::now()) {
         next_printout_time += print_wait_time;

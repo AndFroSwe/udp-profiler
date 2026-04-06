@@ -43,7 +43,7 @@ Example:
   uint16_t port = 0;
   app.add_option("-p,--port", port, "Receiver port")
       ->required(true)
-      ->check(CLI::Range(static_cast<uint16_t>(0), UINT16_MAX));
+      ->check(CLI::Range(static_cast<uint16_t>(0), static_cast<uint16_t>(UINT16_MAX)));
 
   uint32_t timeout_ms = 0;
   app.add_option(
@@ -106,7 +106,7 @@ Example:
     case ReturnCode::TIMEOUT:
       if (bounces == 0) {
         // no connection yet, wait for connection
-        std::cout << std::format("\rWaiting for connection [{}]", SPINNER[i % SPINNER.size()]);
+        std::cout << std::format("\rWaiting for connection [{}]", SPINNER[i % SPINNER.size()]) << std::flush;
       } else {
         if (steady_clock::now() - last_measurement > wait_for) {
           // timeout reached while measuring, measurement done
@@ -118,7 +118,9 @@ Example:
           sock.reset_remote(); // prepare for new connection
         }
       }
-      continue; // restart loop
+      continue;                   // restart loop
+    case ReturnCode::INTERRUPTED: // linux ctrl+c can trigger this
+      continue;                   // ignore, run flag should be negative now
     case ReturnCode::OK:
       break;
     case ReturnCode::ICMP:
@@ -163,7 +165,8 @@ Example:
         std::cout << std::format("\r    Bouncing {} bytes to {}:{}. Bounces: {}", //
                                  payload->message_size,                           // payload size
                                  remote_info->ip, remote_info->port,              // remote info
-                                 bounces);                                        // bounces
+                                 bounces)
+                  << std::flush;
       } else {
         assert(false && "should have remote here");
       }

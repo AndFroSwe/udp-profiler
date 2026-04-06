@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
   uint16_t port = 0;
   app.add_option("-p,--port", port, "Receiver port")
       ->required(true)
-      ->check(CLI::Range(static_cast<uint16_t>(0), UINT16_MAX));
+      ->check(CLI::Range(static_cast<uint16_t>(0), static_cast<uint16_t>(UINT16_MAX)));
 
   uint32_t freq = 0;
   app.add_option("-f,--freq", freq, "Send frequency [Hz]")->default_val(500); // NOLINT(readability-magic*)

@@ -33,6 +33,8 @@ if(WIN32)
   target_link_libraries(connection
   PRIVATE ws2_32
   )
+elseif(UNIX AND NOT APPLE)
+  target_sources(connection PRIVATE connection/connection_linux.cpp)
 else()
   message(FATAL_ERROR "not implemented on OS")
 endif()
